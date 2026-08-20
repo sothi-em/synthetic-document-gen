@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+
+# Environment / secrets
+.env
+
+# Generated output
+labels.json
+data/
+document_gen/data/
+
+# Tooling
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+/.idea
+/.claude
