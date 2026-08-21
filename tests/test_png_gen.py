@@ -1,0 +1,319 @@
+"""Tests for the PNG generator: distress pass and HTML -> PNG rendering.
+
+No LLM required: the distress pass runs on a synthetic numpy image and
+the renderer uses WeasyPrint + pypdfium2 (hard dependencies).
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pytest
+
+from document_gen.document_png import force_page_size, sanitize_image_html
+from document_gen.generators.png_gen import distress_image, html_to_png
+from document_gen.models.distress import DistressOptions
+
+# ---------------------------------------------------------------------------
+# Fixtures / helpers
+# ---------------------------------------------------------------------------
+
+
+def _clean_image() -> np.ndarray:
+    """A clean white BGR document with dark text/lines (like a render)."""
+    img = np.ones((400, 300, 3), dtype=np.uint8) * 255
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(img, "TEST DOCUMENT", (20, 60), font, 0.8, 0, 2, cv2.LINE_AA)
+    cv2.putText(
+        img, "Second line of body text", (20, 120), font, 0.6, 0, 2, cv2.LINE_AA
+    )
+    cv2.line(img, (20, 80), (280, 80), 0, 2)
+    return img
+
+
+@pytest.fixture
+def png_path(tmp_path: Path) -> Path:
+    """A temp PNG file holding the clean synthetic document."""
+    path = tmp_path / "clean.png"
+    assert cv2.imwrite(str(path), _clean_image())
+    return path
+
+
+def _options(**overrides) -> DistressOptions:
+    """Enabled distress options with optional per-flag overrides."""
+    base = dict(enabled=True, seed=42)
+    base.update(overrides)
+    return DistressOptions(**base)
+
+
+def _read(path: Path) -> np.ndarray:
+    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    assert img is not None
+    return img
+
+
+def _background(img: np.ndarray) -> np.ndarray:
+    """Pixels away from the text/lines (top-right corner region)."""
+    return img[150:350, 150:290]
+
+
+# ---------------------------------------------------------------------------
+# distress_image
+# ---------------------------------------------------------------------------
+
+
+class TestDistressImage:
+    def test_disabled_leaves_file_untouched(self, png_path: Path) -> None:
+        before = png_path.read_bytes()
+        distress_image(png_path, DistressOptions(), seed=42)
+        assert png_path.read_bytes() == before
+
+    def test_missing_file_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(FileNotFoundError):
+            distress_image(tmp_path / "nope.png", _options(), seed=42)
+
+    def test_enabled_changes_image_keeps_shape(self, png_path: Path) -> None:
+        before = png_path.read_bytes()
+        distress_image(png_path, _options(), seed=42)
+        after = _read(png_path)
+        assert png_path.read_bytes() != before
+        assert after.shape == _clean_image().shape
+
+    def test_paper_aging_tints_cream(self, png_path: Path) -> None:
+        distress_image(png_path, _options(paper_aging=True), seed=42)
+        b, g, r = _background(_read(png_path)).mean(axis=(0, 1))
+        # Cream paper: red channel warmest, blue coolest.
+        assert r > g > b
+
+    def test_no_paper_aging_stays_neutral(self, png_path: Path) -> None:
+        distress_image(png_path, _options(paper_aging=False, stains=False), seed=42)
+        b, g, r = _background(_read(png_path)).mean(axis=(0, 1))
+        assert abs(r - g) < 3 and abs(g - b) < 3
+
+    def test_vignette_darkens_edges(self, png_path: Path) -> None:
+        distress_image(
+            png_path,
+            _options(paper_aging=True, vignette=True, stains=False, noise=False),
+            seed=42,
+        )
+        img = _read(png_path).astype(np.float32)
+        edge = np.concatenate(
+            [img[0, :].reshape(-1, 3), img[-1, :].reshape(-1, 3)]
+        ).mean()
+        center = img[180:220, 130:170].reshape(-1, 3).mean()
+        assert edge < center * 0.8
+
+    def test_stains_darken_paper(self, png_path: Path) -> None:
+        clean = _clean_image()
+        distressed = clean.copy()
+        distress_image(png_path, _options(stains=True, stain_count=10), seed=42)
+        img = _read(png_path)
+        # With a dozen stains, some background region must be visibly darker.
+        assert _background(img).min() < _background(clean).min() - 10
+
+    def test_zero_stain_count_is_noop_for_stains(self, png_path: Path) -> None:
+        distress_image(
+            png_path,
+            _options(stains=True, stain_count=0, noise=False, vignette=False),
+            seed=42,
+        )
+        img = _read(png_path)
+        # Only the cream tint remains; no darkened blobs.
+        assert _background(img).min() > 180
+
+    def test_noise_raises_variance(self, png_path: Path) -> None:
+        clean = _clean_image()
+        distress_image(
+            png_path,
+            _options(noise=True, noise_strength=20, stains=False, vignette=False),
+            seed=42,
+        )
+        bg = _background(_read(png_path)).astype(np.float32)
+        assert bg.std() > _background(clean).astype(np.float32).std() * 3
+
+    def test_ink_fade_softens_text(self, png_path: Path) -> None:
+        clean = _clean_image()
+        distress_image(png_path, _options(ink_fade=True), seed=42)
+        img = _read(png_path)
+        ink_mask = cv2.cvtColor(clean, cv2.COLOR_BGR2GRAY) < 128
+        assert ink_mask.any()
+        # Faded ink: stamped text is dark but blended with the paper
+        # (no pure-black pixels remain in the ink region).
+        assert img[ink_mask].min() > 0
+        assert img[ink_mask].mean() < 100
+
+    def test_warp_changes_image_keeps_shape(self, png_path: Path) -> None:
+        distress_image(
+            png_path,
+            _options(warp=True, warp_strength=1.0, noise=False, stains=False),
+            seed=42,
+        )
+        img = _read(png_path)
+        assert img.shape == _clean_image().shape
+        assert not np.array_equal(img, _clean_image())
+
+    def test_blur_smooths_image(self, png_path: Path) -> None:
+        distress_image(
+            png_path,
+            _options(blur=True, noise=False, stains=False, vignette=False),
+            seed=42,
+        )
+        img = _read(png_path).astype(np.float32)
+        clean = _clean_image().astype(np.float32)
+        # A 3x3 blur reduces local contrast (gradient magnitude).
+        grad = lambda a: np.abs(np.diff(a, axis=1)).mean()  # noqa: E731
+        assert grad(img) < grad(clean)
+
+    def test_small_image_does_not_crash_stain_blur(self, tmp_path: Path) -> None:
+        # Smaller than the 151x151 stain blur kernel.
+        small = np.ones((60, 80, 3), dtype=np.uint8) * 255
+        path = tmp_path / "small.png"
+        assert cv2.imwrite(str(path), small)
+        distress_image(path, _options(stains=True, stain_count=3), seed=42)
+        assert _read(path).shape == small.shape
+
+    def test_rgba_input_composited_over_white(self, tmp_path: Path) -> None:
+        rgba = np.zeros((100, 100, 4), dtype=np.uint8)
+        rgba[:, :, :3] = 255  # opaque white
+        path = tmp_path / "rgba.png"
+        assert cv2.imwrite(str(path), rgba)
+        distress_image(path, _options(), seed=42)
+        assert _read(path).shape == (100, 100, 3)
+
+    def test_seed_determinism(self, tmp_path: Path) -> None:
+        p1, p2, p3 = (tmp_path / f"img{i}.png" for i in range(3))
+        for p in (p1, p2, p3):
+            assert cv2.imwrite(str(p), _clean_image())
+        distress_image(p1, _options(), seed=7)
+        distress_image(p2, _options(), seed=7)
+        distress_image(p3, _options(), seed=8)
+        assert p1.read_bytes() == p2.read_bytes()
+        assert p1.read_bytes() != p3.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# sanitize_image_html
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeImageHtml:
+    def test_a4_page_rule_injected(self) -> None:
+        doc = sanitize_image_html(
+            "<html><head></head><body><p>hi</p></body></html>", a4=True
+        )
+        assert "@page { size: A4 portrait; margin: 2cm; }" in doc
+
+    def test_auto_page_rule_injected(self) -> None:
+        doc = sanitize_image_html(
+            "<html><head></head><body><p>hi</p></body></html>", a4=False
+        )
+        assert "@page { size: auto; margin: 2cm; }" in doc
+
+    def test_overrides_existing_page_rule(self) -> None:
+        raw = (
+            "<html><head><style>@page { size: letter landscape; margin: 1cm; }</style>"
+            "</head><body></body></html>"
+        )
+        doc = sanitize_image_html(raw, a4=True)
+        assert "size: A4 portrait" in doc
+        assert "letter landscape" not in doc
+        assert "margin: 1cm" not in doc
+
+    def test_no_style_block_inserts_one(self) -> None:
+        doc = sanitize_image_html("<html><body><p>hi</p></body></html>", a4=False)
+        assert "<style>@page { size: auto; margin: 2cm; }</style>" in doc
+
+    def test_extracts_from_code_fences(self) -> None:
+        raw = (
+            "Here you go:\n```html\n<html><head></head><body>x</body></html>\n```\nbye"
+        )
+        doc = sanitize_image_html(raw, a4=True)
+        assert doc.startswith("<html>")
+        assert "```" not in doc
+
+    def test_force_page_size_replaces_rule(self) -> None:
+        doc = sanitize_image_html(
+            "<html><head></head><body><p>hi</p></body></html>", a4=False
+        )
+        forced = force_page_size(doc, "210mm", "123.4mm")
+        assert "@page { size: 210mm 123.4mm; margin: 2cm; }" in forced
+        assert "size: auto" not in forced
+
+
+# ---------------------------------------------------------------------------
+# html_to_png
+# ---------------------------------------------------------------------------
+
+
+class TestHtmlToPng:
+    def test_a4_render_size(self, tmp_path: Path) -> None:
+        from PIL import Image
+
+        path = tmp_path / "a4.png"
+        result = html_to_png("<html><body><h1>Hello</h1></body></html>", path, a4=True)
+        assert result == path
+        with Image.open(path) as img:
+            w, h = img.size
+        # A4 at 96dpi: 794 x 1123 (allow raster rounding).
+        assert 790 <= w <= 798
+        assert 1118 <= h <= 1128
+
+    def test_auto_render_is_content_sized(self, tmp_path: Path) -> None:
+        from PIL import Image
+
+        path = tmp_path / "auto.png"
+        html_to_png("<html><body><h1>Hello</h1></body></html>", path, a4=False)
+        with Image.open(path) as img:
+            w, h = img.size
+        # Content-sized: far shorter than an A4 page.
+        assert h < 800
+        assert w > 0
+
+    def test_multi_page_keeps_page_one_and_warns(self, tmp_path: Path) -> None:
+        from PIL import Image
+
+        # 10 full A4 sections force multiple pages.
+        sections = "".join(
+            f"<div style='height: 25cm'><h1>Section {i}</h1></div>" for i in range(10)
+        )
+        path = tmp_path / "multi.png"
+        html_to_png(f"<html><body>{sections}</body></html>", path, a4=True)
+        with Image.open(path) as img:
+            w, h = img.size
+        assert 790 <= w <= 798
+        assert 1118 <= h <= 1128
+
+    def test_multi_page_logs_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sections = "".join(
+            f"<div style='height: 25cm'><h1>Section {i}</h1></div>" for i in range(5)
+        )
+        with caplog.at_level(logging.WARNING, logger="document_gen.generators.png_gen"):
+            html_to_png(
+                f"<html><body>{sections}</body></html>", tmp_path / "w.png", a4=True
+            )
+        assert any("keeping page 1" in rec.message for rec in caplog.records)
+
+    def test_sanitizes_conflicting_page_rule(self, tmp_path: Path) -> None:
+        from PIL import Image
+
+        raw = (
+            "<html><head><style>@page { size: letter landscape; margin: 1cm; }</style>"
+            "</head><body><h1>Hello</h1></body></html>"
+        )
+        path = tmp_path / "override.png"
+        html_to_png(raw, path, a4=True)
+        with Image.open(path) as img:
+            w, h = img.size
+        # A4 portrait forced despite the LLM's letter landscape rule.
+        assert 790 <= w <= 798
+        assert 1118 <= h <= 1128
+
+    def test_creates_parent_dirs(self, tmp_path: Path) -> None:
+        path = tmp_path / "deep" / "nested" / "out.png"
+        html_to_png("<html><body><h1>Hello</h1></body></html>", path, a4=True)
+        assert path.is_file()
