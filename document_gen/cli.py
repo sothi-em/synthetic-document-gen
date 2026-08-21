@@ -14,6 +14,45 @@ from document_gen.models import FIGURE_KINDS, CompanyProfile, DistressOptions
 from document_gen.document_pdf import generate_document_pdf
 from document_gen.document_png import generate_document_image
 
+#: Curated ``--distress-preset`` bundles (applied on top of the flag-derived
+#: ``DistressOptions``; explicit ``--distress*`` flags win over preset values).
+#: Each preset implies ``backend="augraphy"`` (the model default) unless
+#: ``--distress-backend legacy`` is given explicitly.
+_DISTRESS_PRESETS: dict[str, dict[str, object]] = {
+    "scanned": {
+        "dirty_screen": True,
+        "moire": True,
+        "jpeg_artifacts": True,
+        "color_shift": True,
+    },
+    "office": {
+        "paper_aging": True,
+        "stains": True,
+        "folding": True,
+        "bindings": True,
+        "markup": True,
+        "scribbles": True,
+        "shadow_cast": True,
+    },
+    "fax": {
+        "faxify": True,
+        "dithering": True,
+        "low_ink_random_lines": True,
+        "noise": True,
+        "brightness": True,
+    },
+    "archival": {
+        "paper_aging": True,
+        "vignette": True,
+        "stains": True,
+        "ink_bleed": True,
+        "letterpress": True,
+        "ink_mottling": True,
+        "bleed_through": True,
+        "watermark": True,
+    },
+}
+
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the argument parser with the available subcommands."""
@@ -161,39 +200,60 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Post-process the PNG to look like a scanned, aged document",
     )
     image_parser.add_argument(
+        "--distress-preset",
+        choices=sorted(_DISTRESS_PRESETS),
+        default=None,
+        help=(
+            "Curated distress effect bundle (with --distress); explicit "
+            "--distress* flags win over preset values"
+        ),
+    )
+    image_parser.add_argument(
+        "--distress-backend",
+        choices=["augraphy", "legacy"],
+        default=None,
+        help=("Distress rendering engine (with --distress; default: augraphy)"),
+    )
+    image_parser.add_argument(
         "--no-stains",
         action="store_true",
+        default=None,
         help="Disable the stain blobs (with --distress)",
     )
     image_parser.add_argument(
         "--no-vignette",
         action="store_true",
+        default=None,
         help="Disable the dark-edge vignette (with --distress)",
     )
     image_parser.add_argument(
         "--no-noise",
         action="store_true",
+        default=None,
         help="Disable the scanner grain (with --distress)",
     )
     image_parser.add_argument(
         "--no-ink-fade",
         action="store_true",
+        default=None,
         help="Disable the faded-ink blend (with --distress)",
     )
     image_parser.add_argument(
         "--no-blur",
         action="store_true",
+        default=None,
         help="Disable the scanner focus-loss blur (with --distress)",
     )
     image_parser.add_argument(
         "--warp",
         action="store_true",
+        default=None,
         help="Enable the subtle feed/lens warp (with --distress)",
     )
     image_parser.add_argument(
         "--stain-count",
         type=int,
-        default=4,
+        default=None,
         help="Number of stain centers (default: 4, with --distress)",
     )
     image_parser.add_argument(
@@ -201,8 +261,9 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Seed for the distress noise and warp stages (stain positions "
-            "are random every run; default: company seed)"
+            "Seed for the distress pass (augraphy backend: drives the whole "
+            "pipeline, including stain positions; legacy backend: stain "
+            "positions are random every run; default: company seed)"
         ),
     )
     image_parser.add_argument(
@@ -279,21 +340,40 @@ def _run_document(args: argparse.Namespace) -> None:
     print(f"Wrote {artifact.pdf_path}")
 
 
+def _distress_options_from_args(args: argparse.Namespace) -> DistressOptions | None:
+    """Build ``DistressOptions`` from the ``image`` subcommand flags.
+
+    Returns ``None`` when ``--distress`` is not given. The preset bundle
+    (if any) is applied on top of the flag defaults, and explicitly passed
+    ``--distress*`` flags win over preset values.
+    """
+    if not args.distress:
+        return None
+    options = DistressOptions(enabled=True, seed=args.seed)
+    if args.distress_preset:
+        options = options.model_copy(update=_DISTRESS_PRESETS[args.distress_preset])
+    if args.distress_backend is not None:
+        options = options.model_copy(update={"backend": args.distress_backend})
+    if args.no_stains is not None:
+        options.stains = not args.no_stains
+    if args.no_vignette is not None:
+        options.vignette = not args.no_vignette
+    if args.no_noise is not None:
+        options.noise = not args.no_noise
+    if args.no_ink_fade is not None:
+        options.ink_fade = not args.no_ink_fade
+    if args.no_blur is not None:
+        options.blur = not args.no_blur
+    if args.warp is not None:
+        options.warp = args.warp
+    if args.stain_count is not None:
+        options.stain_count = args.stain_count
+    return options
+
+
 def _run_image(args: argparse.Namespace) -> None:
     """Handle the ``image`` subcommand."""
-    distress = None
-    if args.distress:
-        distress = DistressOptions(
-            enabled=True,
-            vignette=not args.no_vignette,
-            stains=not args.no_stains,
-            stain_count=args.stain_count,
-            noise=not args.no_noise,
-            ink_fade=not args.no_ink_fade,
-            blur=not args.no_blur,
-            warp=args.warp,
-            seed=args.seed,
-        )
+    distress = _distress_options_from_args(args)
     try:
         artifact = generate_document_image(
             args.company_id,

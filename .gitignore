@@ -22,3 +22,4 @@ htmlcov/
 /.claude
 /augraphy_cache
 /fonts
+/document_gen/augraphy_cache
