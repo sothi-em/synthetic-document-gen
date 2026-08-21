@@ -47,7 +47,7 @@ const FILETYPE_STYLES: Record<string, string> = {
   csv: "bg-teal-500/10 text-teal-600 dark:text-teal-400",
   docx: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
   doc: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-  png: "bg-rose-500/10 text-rose-600 dark:text-rose-400",
+  png: "bg-violet-500/10 text-violet-600 dark:text-violet-400",
 }
 
 export function DocumentsPanel({ refreshKey }: DocumentsPanelProps) {
