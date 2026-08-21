@@ -1,5 +1,14 @@
 # Plan: Migrate the Distress Pass to Augraphy
 
+> **Status (post Phase 1+2):** Phases 1 and 2 are implemented and committed.
+> During implementation the augraphy-only principle below (D9) was fixed:
+> the augraphy backend uses **native augraphy augmentations only** — no
+> legacy stage is re-implemented in cv2 to reproduce the old look. Three
+> 8.2.6 behaviors diverged from the original assumptions (see findings 8–10)
+> and were accepted as-is rather than papered over with custom code. The
+> Phase 3 test expectations for `vignette` and `ink_fade` below are updated
+> accordingly.
+
 ## Overview
 
 The distress (scanned/aged look) pass for PNG image documents is implemented
@@ -22,6 +31,14 @@ implementation** (not deleted): it is preserved verbatim as
 old path), so old renders can be reproduced exactly, the two looks can be
 compared side by side, and the legacy code stays available as a fallback
 while the augraphy path is matured.
+
+**The augraphy backend is native-only (D9):** it composes augraphy
+augmentations and pipeline parameters exclusively. A legacy stage is never
+re-implemented in custom cv2 code to make the augraphy output look like the
+old render — where an augraphy native behaves differently (vignette shape,
+paper tint texture, ink fade), the native behavior is accepted. The only
+custom code on the augraphy path is the warp/blur tail (no augraphy
+equivalent) and defensive output re-normalization.
 
 Public contracts that must not change:
 
@@ -83,6 +100,43 @@ Public contracts that must not change:
    runs in ~0.2 s. Heavy augmentations (PaperFactory with texture
    generation, Voronoi/Delaunay tessellation, ShadowCast with large blur
    kernels) may take seconds — see Risks.
+8. **`overlay_alpha` is ignored by the `ink_to_paper` blend.** Contrary to
+   finding 3's implication, `OverlayBuilder.ink_to_paper_blend` composites
+   via `make_white_transparent` (alpha = 255 − luminance of the ink image)
+   and never reads `overlay_alpha`. The pipeline-level `overlay_alpha`
+   kwarg is still passed (it is the native knob and may matter for other
+   overlay types / future versions), but on 8.2.6 `ink_fade` has **no
+   visible effect** on the default overlay type. No custom fade stage is
+   added (D9).
+9. **`LightingGradient` is a light-*strip* band, not a radial vignette.**
+   It decays along one axis from a (optionally rotated, random direction
+   when `direction=None`) light strip; edges can come out *brighter* than
+   the center. It is used natively anyway — `vignette` on the augraphy
+   backend means "uneven lighting gradient", not the old radial dark-edge
+   look.
+10. **`ColorPaper` assigns per-pixel *random* hue/saturation** (OpenCV
+    0–180 hue scale) over the paper canvas, preserving value. The result
+    is a subtly mottled tint, not a uniform cream base; with the catalog's
+    `hue_range=(28, 45)` the tint reads yellow-green, not beige. Accepted
+    as the native paper-aging texture (D9) — ranges are not re-tuned to
+    chase the old cream look.
+11. **Seed overflow.** `zlib.crc32` returns unsigned 32-bit values that
+    overflow `cv2.setRNGSeed` (signed C int) inside `AugraphyPipeline.__init__`
+    → `ValueError`. The combined seed is masked to signed 32-bit
+    (`& 0x7FFFFFFF`) before being passed as `random_seed`.
+12. **numba 0.67 parfor compile crash.** In one process, if `SubtleNoise`'s
+    prange kernel is JIT-compiled before `BadPhotoCopy`'s worley-noise
+    parfor kernel (with `Stains` also present), numba's compiler raises a
+    bare `AssertionError`. Deterministic minimal repro:
+    `Stains + SubtleNoise + BadPhotoCopy` in that compile order. Workaround:
+    append `BadPhotoCopy` **first** in the post phase so its kernel compiles
+    first. (`numba_jit=0` is not a viable workaround: augraphy toggles the
+    process-global `numba.config.DISABLE_JIT` in `__init__`, which breaks
+    other compiled kernels.)
+13. **`Faxify` breaks the output contract.** It resamples by its drawn
+    scale (no resize back) and returns a **2D grayscale** array. The
+    post-augment re-normalization in `distress_array` converts 2D→BGR and
+    resizes to the input shape (`INTER_AREA`).
 
 ---
 
@@ -141,6 +195,17 @@ Public contracts that must not change:
   flags keep working (they set the same `DistressOptions` fields). Add
   `--distress-preset {scanned,office,fax,archival}` that enables a
   curated bundle of the new toggles (see Phase 5). No 40 new CLI flags.
+- **D9 — Native augraphy only; never port legacy stages.** The augraphy
+  backend composes augraphy augmentations and native pipeline parameters
+  exclusively. A legacy hand-rolled stage is **not** re-implemented in
+  custom cv2 code on the augraphy path to reproduce the old look (no
+  custom vignette, no custom ink-fade blend, no re-tuned paper tint):
+  where a native augmentation behaves differently from the legacy stage
+  (findings 8–10), the native behavior is the new behavior. Custom code on
+  the augraphy path is limited to (a) the warp/blur tail stages (no
+  augraphy equivalent) and (b) defensive re-normalization of `augment()`
+  output (uint8 / 3-channel / input size, finding 13). The legacy backend
+  (D1b) is the only way to get the old look.
 
 ---
 
@@ -150,11 +215,11 @@ Public contracts that must not change:
 
 | `DistressOptions` field | augraphy implementation |
 |---|---|
-| `paper_aging` | `ColorPaper(hue_range=(28, 45), saturation_range=(10, 40), p=1.0)` (cream/beige tint, matches the old soft-cream base) |
-| `vignette` / `vignette_strength` | `LightingGradient(light_position=(w//2, h//2), max_brightness=255, min_brightness=round(255 * (1 - vignette_strength)), mode="gaussian", p=1.0)` — center-lit falloff ≈ vignette |
+| `paper_aging` | `ColorPaper(hue_range=(28, 45), saturation_range=(10, 40), p=1.0)` — per-pixel random warm-tint mottle (finding 10), not the old uniform cream base |
+| `vignette` / `vignette_strength` | `LightingGradient(light_position=(w//2, h//2), max_brightness=255, min_brightness=round(255 * (1 - vignette_strength)), mode="gaussian", p=1.0)` — native light-strip gradient (finding 9), not the old radial dark-edge vignette |
 | `stains` / `stain_count` | `Stains(stains_type="random", stains_blend_method="darken", stains_blend_alpha=min(0.2 + 0.04 * stain_count, 0.9), p=1.0)` — count becomes blend intensity (augraphy 8.2.6 exposes no count); slider label in the UI changes to "Stain intensity" |
 | `noise` / `noise_strength` | `SubtleNoise(subtle_range=max(1, int(noise_strength)), p=1.0)` in the post phase |
-| `ink_fade` | pipeline-level `overlay_alpha`: `0.85` when `ink_fade` is on (≈ old 85/15 ink/paper blend), `1.0` when off |
+| `ink_fade` | pipeline-level `overlay_alpha`: `0.85` when `ink_fade` is on, `1.0` when off. **Note (finding 8):** the 8.2.6 `ink_to_paper` blend ignores `overlay_alpha`, so on the default overlay type this toggle currently has no visible effect; it is kept as the native knob, not replaced by a custom fade stage (D9) |
 | `warp` / `warp_strength` | **custom cv2 remap tail stage (unchanged)** |
 | `blur` | **custom 3×3 GaussianBlur tail stage (unchanged)** |
 
@@ -232,10 +297,12 @@ degradation), `InkGenerator`/`NoiseGenerator`/`TextureGenerator`/`PatternMaker`
   import inside the function, per repo convention).
 - Builds the three phase lists from the catalog above: an augmentation is
   appended iff its boolean flag is on; all get `p=1.0`; ranges fixed per
-  D6.
+  D6. **`BadPhotoCopy` is appended before `SubtleNoise`** in the post
+  phase (finding 12, numba compile-order crash).
 - Pipeline kwargs: `overlay_alpha=0.85 if options.ink_fade else 1.0`,
   `random_seed=zlib.crc32(f"{seed}:{stain_seed}".encode()) if stain_seed is
-  not None else seed` (D4).
+  not None else seed` (D4), **masked to signed 32-bit** (`& 0x7FFFFFFF`)
+  to survive `cv2.setRNGSeed` (finding 11).
 - Returns `None` when no augmentation is enabled in any phase (caller
   skips `augment` entirely — keeps the "only warp/blur on" case fast and
   avoids the augraphy_cache write).
@@ -268,8 +335,10 @@ exercise it unchanged via the temporary dispatch in Task 1.3).
   - `"augraphy"` → small-image guard (D7: if `min(h, w) < 30`, log a
     warning and skip augraphy) → `pipeline = _build_augraphy_pipeline(...)`
     → `out = pipeline.augment(clean, return_dict=0) if pipeline else
-    clean.copy()` → warp tail (same code as today) → blur tail (same code
-    as today) → return.
+    clean.copy()` → **defensive re-normalization** (uint8; 2D→BGR and
+    4-channel compositing; resize back to the input shape — `Faxify`
+    returns grayscale at a resampled size, finding 13) → warp tail (same
+    code as today) → blur tail (same code as today) → return.
 - Wrap pipeline build + `augment` in a module-level `threading.Lock`
   (finding 6); the lock covers only the augraphy branch.
 - `distress_image` / `distress_image_to_bytes` wrappers unchanged (they
@@ -342,14 +411,17 @@ backend:
 - disabled → file/bytes unchanged (keep).
 - `paper_aging` → output mean color shifts off-white (hue tint), shape
   preserved.
-- `vignette` → corner pixels darker than center pixels.
+- `vignette` → output differs from clean and shape is preserved. (No
+  corner-vs-center assertion: the native `LightingGradient` is a
+  light-strip band, not a radial vignette — finding 9, D9.)
 - `stains` → output differs from clean; `stain_count=0` + `stains=False`
   → no stain contribution.
 - `noise` → per-channel variance increases vs clean.
 - ink preservation → with `paper_aging` on, dark text pixels in the output
   stay dark (the ink_to_paper overlay keeps content legible).
-- `ink_fade` on vs off → faded output is closer to paper color than the
-  crisp one.
+- `ink_fade` → accepted without error on both settings. (No fade-vs-crisp
+  assertion: the 8.2.6 `ink_to_paper` blend ignores `overlay_alpha` —
+  finding 8, D9.)
 - `warp` / `blur` → unchanged tests (custom tail stages).
 - determinism → same `(options, seed, stain_seed)` twice → byte-identical
   PNG bytes; different seed → different output (holds for stains too on
@@ -376,6 +448,11 @@ legacy suite passing unmodified.
   `addopts`-free default run — keep them in the default run but with small
   params; only split out if the suite exceeds ~60 s).
 - These tests are the guard against augraphy API drift (finding 1).
+- **Combo guard (finding 12):** one test runs the full default options
+  (`paper_aging`, `vignette`, `stains`, `noise`, `ink_fade`, `blur`) plus
+  `bad_photo_copy=True` in a fresh process and asserts it completes
+  without the numba `AssertionError`. This pins the `BadPhotoCopy`
+  before `SubtleNoise` post-phase ordering in `_build_augraphy_pipeline`.
 
 **Done when:** `uv run pytest tests/test_png_gen.py -k aug` green; full
 `uv run pytest` green.
@@ -479,6 +556,11 @@ flags).
   pre-augraphy reference implementation), note that `augraphy_cache/` is
   created at runtime and gitignored, note the behavior change that stain
   positions are now seed-reproducible on the augraphy backend.
+- Note the **native-only** principle (D9): the augraphy backend uses
+  augraphy augmentations as-is, so `paper_aging` (mottled tint),
+  `vignette` (light-strip gradient) look different from the legacy
+  hand-rolled stages, and `ink_fade` currently has no visible effect on
+  8.2.6 (finding 8) — select `backend="legacy"` for the old look.
 
 **Done when:** README matches implemented behavior; `uv run black .` clean.
 
@@ -497,6 +579,9 @@ flags).
 | Dual-path maintenance drift | Legacy path is frozen: `distress_array_legacy` is verbatim-preserved, documented as reference/fallback only, and all new effects land exclusively on the augraphy path; the legacy test suite must keep passing unmodified |
 | `stain_count` semantics change (count → intensity) | UI relabel ("Stain intensity"); field name/range unchanged for compat |
 | augraphy augments mutate/return float or 4-channel in edge cases | Assert `uint8` + 3-channel after `augment` in `distress_array`; re-normalize defensively |
+| numba 0.67 parfor compile crash (finding 12) | `BadPhotoCopy` appended before `SubtleNoise`; a per-augmentation smoke test (Phase 3.2) covering the full-defaults + `bad_photo_copy` combo guards the ordering |
+| `Faxify` returns grayscale at a resampled size (finding 13) | Post-augment re-normalization (2D→BGR, resize to input shape) in `distress_array` |
+| `ink_fade` has no visible effect on 8.2.6 (finding 8) | Accepted per D9; documented in the catalog and README (Phase 6); revisit if a future augraphy release honors `overlay_alpha` for `ink_to_paper` |
 
 ## Validation checklist (end of plan)
 
