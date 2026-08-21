@@ -437,10 +437,11 @@ def generate_document_image(
             ``distress.seed`` when set, otherwise the company seed.
         gen_tracing: When ``True``, the aggregated per-stage trace
             (prompts, outputs, timings) is persisted on the
-            document record under the ``gen_tracing`` field. Traced
-            images are always distressed (default effects when no
-            explicit distress options are enabled) and the pass always
-            starts from the fresh clean render. Under tracing, the
+            document record under the ``gen_tracing`` field. The
+            generated image is left as a perfect (undistressed)
+            render unless *distress* explicitly enables the pass, and
+            the pass always starts from the fresh clean render. Under
+            tracing, the
             untouched render is also preserved as
             ``<stem>_original.png`` next to the document and referenced
             from the trace (``stages.distress.original_path``) —
@@ -483,12 +484,11 @@ def generate_document_image(
 
     seed = doc.get("seed", 0)
     backend = get_chat_backend()
+    # Generated images are left as perfect (undistressed) renders
+    # unless the distress pass is explicitly enabled; when it runs it
+    # always starts from the fresh clean render (the original is
+    # preserved separately under tracing).
     distress_options = distress if distress is not None else DistressOptions()
-    # Traced images are always distressed (default effects) so the live
-    # editor has a rendered look to start from; the pass always runs on
-    # the fresh clean render (the original is preserved separately).
-    if gen_tracing and not distress_options.enabled:
-        distress_options = DistressOptions(enabled=True)
     # Image documents always use the full token caps and keep model
     # thinking on (there is no quick-doc variant).
     thinking = True

@@ -325,9 +325,12 @@ export function stainSeedFor(docId: number): number {
 /** Body for the distress preview/save endpoints. */
 export interface DistressEditBody {
   distress: DistressOptions
-  /** Noise/warp seed (from the generation trace). */
+  /**
+   * Noise/warp seed: the user-entered seed when set, otherwise a fresh
+   * random one per edit (blank seed = randomized render).
+   */
   seed: number
-  /** Editor-derived stain seed (see `stainSeedFor`). */
+  /** Stain seed: deterministic per document (see `stainSeedFor`) or random. */
   stain_seed: number
 }
 

@@ -54,8 +54,8 @@ interface GenerateImageDialogProps {
  * Generate a single-page PNG image document for one document type:
  * optional free-text guidance + model override, A4 aspect ratio lock,
  * background job with live progress, and a download link when done.
- * Traced images are distressed server-side (default effects) and can
- * be re-distressed from the clean original in the preview editor.
+ * Generated images are left undistressed; traced images can be
+ * distressed from the stored clean original in the preview editor.
  */
 export function GenerateImageDialog({
   open,
@@ -114,8 +114,9 @@ export function GenerateImageDialog({
         figure_kinds: FIGURE_KIND_OPTIONS.filter(({ kind }) => figureKinds[kind])
           .map(({ kind }) => kind),
         a4_aspect: a4Aspect,
-        // No distress option in the modal: traced images are distressed
-        // server-side (default effects) from the clean render.
+        // No distress option in the modal: images are generated
+        // undistressed; distress is applied later from the preview
+        // editor (all settings off by default).
         gen_tracing: genTrace,
       })
       start(job.id, 1, () => {})

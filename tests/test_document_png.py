@@ -215,11 +215,12 @@ def _check_trace(
     assert Path(stages["png"]["path"]) == artifact.png_path
     assert stages["png"]["size_bytes"] > 0
 
-    # Distress stage: traced images are always distressed (default
-    # effects) and seeded from the company seed.
-    assert stages["distress"]["enabled"] is True
-    assert stages["distress"]["seed"] == 42  # company seed
-    assert stages["distress"]["options"]["enabled"] is True
+    # Distress stage: generated images are left undistressed by
+    # default (perfect render); the pass only runs when explicitly
+    # enabled.
+    assert stages["distress"]["enabled"] is False
+    assert stages["distress"]["seed"] is None
+    assert stages["distress"]["options"]["enabled"] is False
 
 
 def test_trace_persistence_flag(
@@ -413,21 +414,21 @@ class TestGenerateDocumentImage:
         assert "original_path" not in stage
         assert not list(tmp_path.glob("*_original.png"))
 
-    def test_traced_render_is_auto_distressed_from_clean_original(
+    def test_traced_render_is_clean_but_stays_editable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Tracing always distresses (default effects) and preserves the
-        # fresh clean render as the original, so the image stays editable
-        # in the live distress editor.
+        # Generated images are left undistressed by default; tracing
+        # preserves the fresh clean render as the original, so the image
+        # stays editable in the live distress editor.
         backend = FakeBackend()
         artifact = _run(tmp_path, monkeypatch, backend, gen_tracing=True)
         stage = artifact.gen_tracing["stages"]["distress"]
-        assert stage["enabled"] is True
+        assert stage["enabled"] is False
         original = Path(stage["original_path"])
         assert original.is_file()
-        # The distress pass ran: the original (clean render) differs from
-        # the persisted (distressed) document file.
-        assert original.read_bytes() != artifact.png_path.read_bytes()
+        # No distress pass ran: the persisted document file is the
+        # clean render (identical to the stored original).
+        assert original.read_bytes() == artifact.png_path.read_bytes()
 
     def test_distress_seed_falls_back_to_company_seed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

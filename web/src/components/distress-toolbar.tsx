@@ -279,13 +279,14 @@ function distressTrace(
 }
 
 /**
- * Options exactly as recorded in the generation trace, so the toolbar
- * presets match the persisted render. Traced images generated without
- * distress start from :const:`CLEAN_OPTIONS` (all flags false, values
- * 0) even though the trace stores the unused per-effect defaults; only
- * untraced documents fall back to :const:`DEFAULT_OPTIONS`. Old traces
- * without the new fields (or a `backend` key) pick up the defaults
- * (new effects off, backend "augraphy").
+ * Starting state for the toolbar. Images that were generated with
+ * distress on load the settings recorded in the generation trace, so
+ * the toolbar matches the persisted (distressed) render instead of
+ * resetting it. Images generated without distress (or with a trace
+ * missing its options block) start from :const:`CLEAN_OPTIONS` — all
+ * flags false, values 0. `enabled` stays on so individual effect
+ * toggles take effect immediately; untraced documents (toolbar
+ * disabled anyway) fall back to :const:`DEFAULT_OPTIONS`.
  */
 function initialOptions(doc: DocumentRecord): DistressOptions {
   const trace = distressTrace(doc)
@@ -305,10 +306,9 @@ function initialOptions(doc: DocumentRecord): DistressOptions {
   }
 }
 
-/** Noise/warp seed pinned at generation time (0 when absent). */
-function traceSeed(doc: DocumentRecord): number {
-  const seed = distressTrace(doc)?.seed
-  return typeof seed === "number" ? seed : 0
+/** Fresh non-negative random seed for blank-seed (random) mode. */
+function randomSeed(): number {
+  return Math.floor(Math.random() * 0x7fffffff)
 }
 
 interface DistressToolbarProps {
@@ -362,6 +362,34 @@ export function DistressToolbar({
   /** Monotonic id so stale preview responses are dropped. */
   const requestRef = useRef(0)
   const firstRunRef = useRef(true)
+  /**
+   * Ephemeral seeds for blank-seed (random) mode: regenerated on every
+   * options change so each toggle gives a new random render, and held
+   * stable afterwards so save persists exactly what the preview showed.
+   */
+  const ephemeralSeedsRef = useRef<{ seed: number; stainSeed: number } | null>(
+    null,
+  )
+  const lastOptionsRef = useRef(options)
+
+  /**
+   * Seeds for the next preview/save request. A user-entered seed is
+   * deterministic (stain seed derived from the document id); a blank
+   * seed uses the ephemeral random pair (refreshed per options change).
+   */
+  const seedsFor = (options: DistressOptions): { seed: number; stainSeed: number } => {
+    if (options.seed !== null) {
+      return { seed: options.seed, stainSeed: stainSeedFor(doc.id) }
+    }
+    if (
+      ephemeralSeedsRef.current === null ||
+      lastOptionsRef.current !== options
+    ) {
+      ephemeralSeedsRef.current = { seed: randomSeed(), stainSeed: randomSeed() }
+      lastOptionsRef.current = options
+    }
+    return ephemeralSeedsRef.current
+  }
 
   useEffect(() => {
     onBusyChange?.(busy)
@@ -383,10 +411,11 @@ export function DistressToolbar({
     const timer = setTimeout(() => {
       void (async () => {
         try {
+          const seeds = seedsFor(options)
           const blob = await api.distressPreview(doc.id, {
             distress: options,
-            seed: traceSeed(doc),
-            stain_seed: stainSeedFor(doc.id),
+            seed: seeds.seed,
+            stain_seed: seeds.stainSeed,
           })
           if (requestRef.current === reqId) onPreview(blob)
         } catch (err) {
@@ -405,10 +434,11 @@ export function DistressToolbar({
     setBusy(true)
     setError(null)
     try {
+      const seeds = seedsFor(options)
       const updated = await api.distressSave(doc.id, {
         distress: options,
-        seed: traceSeed(doc),
-        stain_seed: stainSeedFor(doc.id),
+        seed: seeds.seed,
+        stain_seed: seeds.stainSeed,
       })
       setJustSaved(true)
       onSaved?.(updated)
@@ -470,6 +500,33 @@ export function DistressToolbar({
               (no-ops).
             </p>
           )}
+        </div>
+        <div className="flex flex-col gap-1">
+          <span
+            className={
+              "text-xs " +
+              (editable ? "text-foreground" : "text-muted-foreground")
+            }
+          >
+            Seed (blank = random)
+          </span>
+          <Input
+            className="h-8"
+            inputMode="numeric"
+            placeholder="random"
+            value={options.seed === null ? "" : String(options.seed)}
+            disabled={!editable}
+            onChange={(e) => {
+              const raw = e.target.value.trim()
+              if (raw === "") {
+                setOptions((o) => ({ ...o, seed: null }))
+                return
+              }
+              const value = Number.parseInt(raw, 10)
+              if (Number.isNaN(value)) return
+              setOptions((o) => ({ ...o, seed: value }))
+            }}
+          />
         </div>
         {SECTIONS.map((section) => {
           const open = openSections[section.key]
