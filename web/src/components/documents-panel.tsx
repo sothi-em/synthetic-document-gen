@@ -67,6 +67,15 @@ export function DocumentsPanel({ refreshKey }: DocumentsPanelProps) {
   /** Strip the extension so the user edits only the base name. */
   const baseName = (filename: string) => filename.replace(/\.[^.]+$/, "")
 
+  /** Merge a refreshed record (e.g. after a distress save) into the list
+   *  and the open preview dialog, keeping the joined names intact. */
+  const handleDocumentSaved = useCallback((updated: DocumentRecord) => {
+    setDocuments((docs) =>
+      docs.map((d) => (d.id === updated.id ? { ...d, ...updated } : d)),
+    )
+    setViewingDoc((d) => (d && d.id === updated.id ? { ...d, ...updated } : d))
+  }, [])
+
   const startRename = useCallback((doc: DocumentRecord) => {
     setRenameName(baseName(doc.filename))
     setRenamingDoc(doc)
@@ -289,6 +298,7 @@ export function DocumentsPanel({ refreshKey }: DocumentsPanelProps) {
       <DocumentViewDialog
         doc={viewingDoc}
         onClose={() => setViewingDoc(null)}
+        onDocumentSaved={handleDocumentSaved}
       />
       <TraceViewDialog doc={tracingDoc} onClose={() => setTracingDoc(null)} />
       <Dialog

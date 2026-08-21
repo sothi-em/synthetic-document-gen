@@ -224,6 +224,19 @@ aspect ratio** checkbox (default on) and a **Distress document** checkbox
 that reveals per-effect toggles and strength inputs. Generated PNGs preview
 inline in the document view dialog.
 
+**Live distress editing.** When a PNG is generated with tracing on and
+distress enabled, the untouched render is preserved as `<stem>_original.png`
+next to the document (referenced from the trace at
+`gen_tracing.stages.distress.original_path`). The document view dialog then
+shows a distress toolbar — a switch per effect plus a slider per strength —
+that re-renders the stored original server-side on every (debounced) change,
+so the preview is exactly what gets persisted. **Save** writes the current
+render over the document file; the original stays untouched, so the image
+remains re-editable (toggling all effects off and saving restores the clean
+render). When no trace/original exists (generated without tracing, or
+distress was off), the toolbar renders fully disabled with a hint explaining
+why.
+
 ### Web UI
 
 The frontend lives in `web/` (Vite + React + TypeScript, Tailwind CSS v4,

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Download, EyeOff, LoaderCircle } from "lucide-react"
 import { api, type DocumentRecord } from "@/lib/api"
+import { DistressToolbar } from "@/components/distress-toolbar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -66,6 +67,8 @@ interface DocumentViewDialogProps {
   /** Document to preview; `null` keeps the dialog closed. */
   doc: DocumentRecord | null
   onClose: () => void
+  /** Called after an in-dialog edit (distress save) persists. */
+  onDocumentSaved?: (doc: DocumentRecord) => void
 }
 
 /**
@@ -73,12 +76,45 @@ interface DocumentViewDialogProps {
  * XLSX/XLS/CSV as tables (SheetJS) and DOCX as HTML (docx-preview).
  * Anything else falls back to a download prompt.
  */
-export function DocumentViewDialog({ doc, onClose }: DocumentViewDialogProps) {
+export function DocumentViewDialog({
+  doc,
+  onClose,
+  onDocumentSaved,
+}: DocumentViewDialogProps) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading")
   const [error, setError] = useState<string | null>(null)
   const [sheets, setSheets] = useState<SheetData[]>([])
   const [activeSheet, setActiveSheet] = useState(0)
   const docxRef = useRef<HTMLDivElement>(null)
+  /**
+   * Image preview source: the persisted file URL by default, replaced by
+   * a blob URL while the distress toolbar is live-rendering.
+   */
+  const [previewSrc, setPreviewSrc] = useState("")
+  const blobUrlRef = useRef<string | null>(null)
+  const [rendering, setRendering] = useState(false)
+
+  // Reset the image preview when a different document is opened; revoke
+  // any live-render blob URL on switch/unmount. Keyed on the id (not the
+  // record) so a save refreshing the record does not discard the blob.
+  useEffect(() => {
+    if (!doc) return
+    setPreviewSrc(api.documentPreviewUrl(doc.id))
+    setRendering(false)
+    return () => {
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current)
+        blobUrlRef.current = null
+      }
+    }
+  }, [doc?.id]) // eslint-disable-line react-hooks/exhaustive-deps -- keyed on id on purpose
+
+  const handlePreview = useCallback((blob: Blob) => {
+    const url = URL.createObjectURL(blob)
+    if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current)
+    blobUrlRef.current = url
+    setPreviewSrc(url)
+  }, [])
 
   useEffect(() => {
     if (!doc) return
@@ -173,16 +209,33 @@ export function DocumentViewDialog({ doc, onClose }: DocumentViewDialogProps) {
             />
           )}
           {status === "ready" && kind === "image" && (
-            <div className="flex h-full items-center justify-center overflow-auto p-4">
-              <img
-                src={api.documentPreviewUrl(doc.id)}
-                alt={doc.filename}
-                className="max-h-full max-w-full object-contain"
-                onError={() => {
-                  setError("Could not load this image")
-                  setStatus("error")
-                }}
-              />
+            <div className="flex h-full">
+              <div className="w-60 shrink-0 sm:w-64">
+                <DistressToolbar
+                  key={doc.id}
+                  doc={doc}
+                  onPreview={handlePreview}
+                  onBusyChange={setRendering}
+                  onSaved={onDocumentSaved}
+                />
+              </div>
+              <div className="relative flex min-w-0 flex-1 items-center justify-center overflow-auto p-4">
+                {rendering && (
+                  <span className="absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-full bg-background/90 px-2.5 py-1 text-xs shadow">
+                    <LoaderCircle className="size-3.5 animate-spin" />
+                    Rendering…
+                  </span>
+                )}
+                <img
+                  src={previewSrc}
+                  alt={doc.filename}
+                  className="max-h-full max-w-full object-contain"
+                  onError={() => {
+                    setError("Could not load this image")
+                    setStatus("error")
+                  }}
+                />
+              </div>
             </div>
           )}
           {status === "ready" && kind === "sheet" && (

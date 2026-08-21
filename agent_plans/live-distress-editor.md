@@ -208,7 +208,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Goal:** shadcn `Slider` and `Switch` available in `web/src/components/ui/`.
 
-### Task 5.1 — Install + add components — [ ]
+### Task 5.1 — Install + add components — [x]
 
 **Files:** `web/package.json`, `web/src/components/ui/slider.tsx` (new), `web/src/components/ui/switch.tsx` (new)
 
@@ -223,7 +223,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Goal:** the live editor UX, including the disabled state.
 
-### Task 6.1 — `DistressToolbar` component (controls + state) — [ ]
+### Task 6.1 — `DistressToolbar` component (controls + state) — [x]
 
 **Files:** `web/src/components/distress-toolbar.tsx` (new)
 
@@ -247,7 +247,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `pnpm build && pnpm lint` pass; component renders (not yet wired to the image).
 
-### Task 6.2 — Live preview loop — [ ]
+### Task 6.2 — Live preview loop — [x]
 
 **Files:** `web/src/components/distress-toolbar.tsx`, `web/src/components/document-view-dialog.tsx`
 
@@ -261,7 +261,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `pnpm build && pnpm lint` pass; manual: traced+distressed image → sliders/toggles re-render the image live with a rendering indicator; blob URLs are revoked (check DevTools for no unbounded object-URL growth).
 
-### Task 6.3 — Save button + list refresh — [ ]
+### Task 6.3 — Save button + list refresh — [x]
 
 **Files:** `web/src/components/distress-toolbar.tsx`, `web/src/components/document-view-dialog.tsx`, `web/src/components/documents-panel.tsx`
 
@@ -277,7 +277,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 ## Phase 7 — Docs and final verification
 
-### Task 7.1 — README — [ ]
+### Task 7.1 — README — [x]
 
 **Files:** `README.md`
 
@@ -285,7 +285,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** README reflects the feature.
 
-### Task 7.2 — Full gate — [ ]
+### Task 7.2 — Full gate — [x]
 
 - `uv run pytest` — all green.
 - `uv run black .` — no changes.
