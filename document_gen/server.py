@@ -31,10 +31,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 
-from document_gen import document_excel, document_pdf, document_query, llm
+from document_gen import document_excel, document_pdf, document_png, document_query, llm
 from document_gen.models import (
     FIGURE_KINDS,
     CompanyProfile,
+    DistressOptions,
     EndpointConfig,
     LLMSettings,
     DocumentType,
@@ -247,6 +248,49 @@ class DocumentExcelRequest(BaseModel):
             "When true, add a single Glossary lookup sheet defining the "
             "abbreviated terms used in the workbook (used sparingly: "
             "readable 4+ character terms, not every sheet)."
+        ),
+    )
+    gen_tracing: bool = Field(
+        default=False,
+        description=(
+            "When true, persist the per-stage generation trace (prompts, "
+            "outputs, timings) on the document record under the "
+            "gen_tracing field."
+        ),
+    )
+
+    _check_figure_kinds = field_validator("figure_kinds")(_validate_figure_kinds)
+
+
+class DocumentImageRequest(BaseModel):
+    """Request body for ``POST /api/companies/{company_id}/image``."""
+
+    report: str = Field(min_length=1, description="Document type name or index")
+    user_input: str | None = Field(
+        default=None, description="Optional free-text guidance for the content"
+    )
+    model: str | None = None
+    figure_kinds: list[str] = Field(
+        default_factory=list,
+        description=(
+            'Allowed matplotlib figure kinds (e.g. "bar", '
+            '"line", "area", "pie", "scatter", "histogram"). '
+            "Empty (default) includes no figures. At most one figure is "
+            "used (single-page contract)."
+        ),
+    )
+    a4_aspect: bool = Field(
+        default=True,
+        description=(
+            "When true, lock the page to A4 portrait; when false the page "
+            "sizes itself to the content."
+        ),
+    )
+    distress: DistressOptions = Field(
+        default_factory=DistressOptions,
+        description=(
+            "Optional post-processing pass making the PNG look like a "
+            "scanned, aged document (no-op when enabled is false)."
         ),
     )
     gen_tracing: bool = Field(
@@ -1101,6 +1145,102 @@ def download_company_excel(company_id: int, filename: str) -> FileResponse:
     if not path.is_file() or out_dir.resolve() not in path.parents:
         raise HTTPException(status_code=404, detail="Excel workbook not found")
     return FileResponse(path, media_type=XLSX_MEDIA_TYPE, filename=filename)
+
+
+# ---------------------------------------------------------------------------
+# PNG image document generation
+# ---------------------------------------------------------------------------
+
+
+def _run_image_job(job: _Job, company_id: int, request: DocumentImageRequest) -> None:
+    """Worker thread: generate one PNG image document, publish progress."""
+    with _capture_job_logs(job):
+        logger.info(
+            "Image job %s: starting (company %s, report=%r, model=%r)",
+            job.id,
+            company_id,
+            request.report,
+            request.model,
+        )
+        t0 = time.perf_counter()
+        try:
+            artifact = document_png.generate_document_image(
+                company_id,
+                request.report,
+                user_input=request.user_input,
+                model_name=request.model,
+                figure_kinds=request.figure_kinds,
+                a4_aspect=request.a4_aspect,
+                distress=request.distress,
+                gen_tracing=request.gen_tracing,
+            )
+            logger.info(
+                "Image job %s: done in %.3fs -> %s",
+                job.id,
+                time.perf_counter() - t0,
+                artifact.png_path,
+            )
+            job.result = {
+                "png": artifact.png_path.name,
+                "report": artifact.report_name,
+            }
+            job.completed += 1
+            job.company_ids = [company_id]
+            job.status = "done"
+        except Exception as exc:  # surface any pipeline error to the client
+            logger.exception(
+                "Image job %s: failed after %.3fs", job.id, time.perf_counter() - t0
+            )
+            job.status = "error"
+            job.error = str(exc)
+        finally:
+            job._publish()
+            job._close_subscribers()
+
+
+@app.post("/api/companies/{company_id}/image", status_code=202)
+def generate_company_image(company_id: int, request: DocumentImageRequest) -> dict:
+    """Start a background job generating a PNG image document for one company.
+
+    Rejected with 400 when no effective document output directory is
+    configured (saved setting or ``DOCUMENTS_DIR`` env var).
+    """
+    _require_company(company_id)
+    if document_pdf.resolve_output_dir() is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No document output directory set: configure it in the "
+                "Settings tab or set the DOCUMENTS_DIR environment variable."
+            ),
+        )
+    job = _Job(id=uuid.uuid4().hex[:12], total=1)
+    _JOBS[job.id] = job
+    _prune_jobs()
+    threading.Thread(
+        target=_run_image_job, args=(job, company_id, request), daemon=True
+    ).start()
+    return {"id": job.id, "status": job.status, "total": job.total}
+
+
+@app.get("/api/companies/{company_id}/image/{filename}")
+def download_company_image(company_id: int, filename: str) -> FileResponse:
+    """Serve a generated PNG image from the document output directory."""
+    _require_company(company_id)
+    if (
+        not filename.endswith(".png")
+        or filename != Path(filename).name
+        or "/" in filename
+        or "\\" in filename
+    ):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    out_dir = document_pdf.resolve_output_dir()
+    if out_dir is None:
+        raise HTTPException(status_code=400, detail="No document output directory set")
+    path = (out_dir / filename).resolve()
+    if not path.is_file() or out_dir.resolve() not in path.parents:
+        raise HTTPException(status_code=404, detail="PNG image not found")
+    return FileResponse(path, media_type="image/png", filename=filename)
 
 
 # ---------------------------------------------------------------------------

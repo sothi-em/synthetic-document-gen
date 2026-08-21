@@ -1129,6 +1129,207 @@ class TestCompanyExcel:
 
 
 # ---------------------------------------------------------------------------
+# PNG image document generation
+# ---------------------------------------------------------------------------
+
+
+class TestCompanyImage:
+    def test_validation_errors(self, client, company_db, monkeypatch, tmp_path) -> None:
+        # No output directory configured.
+        monkeypatch.delenv("DOCUMENTS_DIR", raising=False)
+        assert (
+            client.post(
+                f"/api/companies/{company_db[0]}/image", json={"report": "x"}
+            ).status_code
+            == 400
+        )
+        monkeypatch.setenv("DOCUMENTS_DIR", str(tmp_path))
+        # Unknown company.
+        assert (
+            client.post("/api/companies/999999/image", json={"report": "x"}).status_code
+            == 404
+        )
+        # Unknown figure kind.
+        assert (
+            client.post(
+                f"/api/companies/{company_db[0]}/image",
+                json={"report": "Onboarding Guide", "figure_kinds": ["donut"]},
+            ).status_code
+            == 422
+        )
+        # Malformed distress options are rejected.
+        assert (
+            client.post(
+                f"/api/companies/{company_db[0]}/image",
+                json={"report": "x", "distress": {"stain_count": "not-a-number"}},
+            ).status_code
+            == 422
+        )
+
+    def test_job_completes(self, client, company_db, monkeypatch, tmp_path) -> None:
+        from types import SimpleNamespace
+
+        out = tmp_path / "reports"
+        monkeypatch.setenv("DOCUMENTS_DIR", str(out))
+        calls: dict = {}
+
+        def fake_generate(
+            company_id,
+            report,
+            user_input=None,
+            model_name=None,
+            output_dir=None,
+            figure_kinds=None,
+            a4_aspect=True,
+            distress=None,
+            gen_tracing=False,
+        ):
+            calls.update(
+                company_id=company_id,
+                report=report,
+                user_input=user_input,
+                model_name=model_name,
+                figure_kinds=figure_kinds,
+                a4_aspect=a4_aspect,
+                distress=distress,
+                gen_tracing=gen_tracing,
+            )
+            return SimpleNamespace(
+                png_path=out / "acme_report.png", report_name="Onboarding Guide"
+            )
+
+        monkeypatch.setattr(
+            server.document_png, "generate_document_image", fake_generate
+        )
+        response = client.post(
+            f"/api/companies/{company_db[0]}/image",
+            json={
+                "report": "Onboarding Guide",
+                "user_input": "focus on Q3",
+                "model": "m1",
+            },
+        )
+        assert response.status_code == 202
+        job_id = response.json()["id"]
+
+        status = _poll_job(client, job_id)
+        assert status["status"] == "done"
+        assert status["company_ids"] == [company_db[0]]
+        assert status["result"] == {
+            "png": "acme_report.png",
+            "report": "Onboarding Guide",
+        }
+        # Stage log lines from the worker thread were captured.
+        assert any("starting" in line for line in status["logs"])
+        assert any("done in" in line for line in status["logs"])
+        assert calls["company_id"] == company_db[0]
+        assert calls["report"] == "Onboarding Guide"
+        assert calls["user_input"] == "focus on Q3"
+        assert calls["model_name"] == "m1"
+        assert calls["figure_kinds"] == []
+        assert calls["a4_aspect"] is True
+        assert calls["distress"].enabled is False
+        assert calls["gen_tracing"] is False
+
+    def test_options_pass_through(
+        self, client, company_db, monkeypatch, tmp_path
+    ) -> None:
+        from types import SimpleNamespace
+
+        out = tmp_path / "reports"
+        monkeypatch.setenv("DOCUMENTS_DIR", str(out))
+        calls: dict = {}
+
+        def fake_generate(
+            company_id, report, user_input=None, model_name=None, **kwargs
+        ):
+            calls.update(user_input=user_input, model_name=model_name)
+            calls.update(kwargs)
+            return SimpleNamespace(
+                png_path=out / "acme_report.png", report_name="Onboarding Guide"
+            )
+
+        monkeypatch.setattr(
+            server.document_png, "generate_document_image", fake_generate
+        )
+        response = client.post(
+            f"/api/companies/{company_db[0]}/image",
+            json={
+                "report": "Onboarding Guide",
+                "user_input": "focus on Q3",
+                "model": "m1",
+                "figure_kinds": ["bar", "line"],
+                "a4_aspect": False,
+                "distress": {
+                    "enabled": True,
+                    "stains": True,
+                    "stain_count": 7,
+                    "warp": True,
+                },
+                "gen_tracing": True,
+            },
+        )
+        assert response.status_code == 202
+        _poll_job(client, response.json()["id"])
+        assert calls["user_input"] == "focus on Q3"
+        assert calls["model_name"] == "m1"
+        assert calls["figure_kinds"] == ["bar", "line"]
+        assert calls["a4_aspect"] is False
+        assert calls["gen_tracing"] is True
+        assert calls["distress"].enabled is True
+        assert calls["distress"].stain_count == 7
+        assert calls["distress"].warp is True
+
+    def test_job_error(self, client, company_db, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("DOCUMENTS_DIR", str(tmp_path))
+
+        def fake_generate(company_id, report, **kwargs):
+            raise ValueError("Document type 'x' not found for company")
+
+        monkeypatch.setattr(
+            server.document_png, "generate_document_image", fake_generate
+        )
+        response = client.post(
+            f"/api/companies/{company_db[0]}/image", json={"report": "x"}
+        )
+        assert response.status_code == 202
+        status = _poll_job(client, response.json()["id"])
+        assert status["status"] == "error"
+        assert "not found" in (status["error"] or "")
+
+    def test_download_serves_file(
+        self, client, company_db, monkeypatch, tmp_path
+    ) -> None:
+        out = tmp_path / "reports"
+        out.mkdir()
+        (out / "acme_report.png").write_bytes(b"\x89PNG fake")
+        monkeypatch.setenv("DOCUMENTS_DIR", str(out))
+        response = client.get(f"/api/companies/{company_db[0]}/image/acme_report.png")
+        assert response.status_code == 200
+        assert response.content == b"\x89PNG fake"
+        assert response.headers["content-type"] == "image/png"
+
+    def test_download_errors(self, client, company_db, monkeypatch, tmp_path) -> None:
+        out = tmp_path / "reports"
+        out.mkdir()
+        monkeypatch.setenv("DOCUMENTS_DIR", str(out))
+        assert (
+            client.get(f"/api/companies/{company_db[0]}/image/nope.png").status_code
+            == 404
+        )
+        # Non-PNG file names are rejected.
+        monkeypatch.setenv("DOCUMENTS_DIR", str(tmp_path))
+        assert (
+            client.get(f"/api/companies/{company_db[0]}/image/notes.txt").status_code
+            == 400
+        )
+        # Path traversal is rejected.
+        assert client.get(
+            f"/api/companies/{company_db[0]}/image/..%2Fevil.png"
+        ).status_code in (400, 404)
+
+
+# ---------------------------------------------------------------------------
 # Report documents
 # ---------------------------------------------------------------------------
 
