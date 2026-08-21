@@ -10,8 +10,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from document_gen import document_query
-from document_gen.models import FIGURE_KINDS, CompanyProfile
+from document_gen.models import FIGURE_KINDS, CompanyProfile, DistressOptions
 from document_gen.document_pdf import generate_document_pdf
+from document_gen.document_png import generate_document_image
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -104,6 +105,109 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    image_parser = subparsers.add_parser(
+        "image",
+        help="Generate a single-page PNG image document for a stored company",
+    )
+    image_parser.add_argument(
+        "--company-id",
+        type=int,
+        required=True,
+        help="TinyDB doc_id of the company",
+    )
+    image_parser.add_argument(
+        "--document",
+        required=True,
+        help="Document type name (case-insensitive) or 0-based index",
+    )
+    image_parser.add_argument(
+        "--input",
+        default=None,
+        help="Optional free-text guidance for the document content",
+    )
+    image_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Output directory (default: the saved setting, then the "
+            "DOCUMENTS_DIR env var)"
+        ),
+    )
+    image_parser.add_argument(
+        "--model",
+        default=None,
+        help="Model ID override for the configured chat backend",
+    )
+    image_parser.add_argument(
+        "--figure-kind",
+        action="append",
+        choices=list(FIGURE_KINDS),
+        default=[],
+        metavar="KIND",
+        help=(
+            "Allowed matplotlib figure kind (repeatable); no figures are "
+            "included unless at least one kind is given"
+        ),
+    )
+    image_parser.add_argument(
+        "--no-a4",
+        action="store_true",
+        help="Let the page size itself to the content instead of A4 portrait",
+    )
+    image_parser.add_argument(
+        "--distress",
+        action="store_true",
+        help="Post-process the PNG to look like a scanned, aged document",
+    )
+    image_parser.add_argument(
+        "--no-stains",
+        action="store_true",
+        help="Disable the stain blobs (with --distress)",
+    )
+    image_parser.add_argument(
+        "--no-vignette",
+        action="store_true",
+        help="Disable the dark-edge vignette (with --distress)",
+    )
+    image_parser.add_argument(
+        "--no-noise",
+        action="store_true",
+        help="Disable the scanner grain (with --distress)",
+    )
+    image_parser.add_argument(
+        "--no-ink-fade",
+        action="store_true",
+        help="Disable the faded-ink blend (with --distress)",
+    )
+    image_parser.add_argument(
+        "--no-blur",
+        action="store_true",
+        help="Disable the scanner focus-loss blur (with --distress)",
+    )
+    image_parser.add_argument(
+        "--warp",
+        action="store_true",
+        help="Enable the subtle feed/lens warp (with --distress)",
+    )
+    image_parser.add_argument(
+        "--stain-count",
+        type=int,
+        default=4,
+        help="Number of stain centers (default: 4, with --distress)",
+    )
+    image_parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Reproducibility seed for the distress pass (default: company seed)",
+    )
+    image_parser.add_argument(
+        "--keep-intermediates",
+        action="store_true",
+        help="Also save the generated markdown and HTML next to the PNG",
+    )
+
     return parser
 
 
@@ -172,6 +276,44 @@ def _run_document(args: argparse.Namespace) -> None:
     print(f"Wrote {artifact.pdf_path}")
 
 
+def _run_image(args: argparse.Namespace) -> None:
+    """Handle the ``image`` subcommand."""
+    distress = None
+    if args.distress:
+        distress = DistressOptions(
+            enabled=True,
+            vignette=not args.no_vignette,
+            stains=not args.no_stains,
+            stain_count=args.stain_count,
+            noise=not args.no_noise,
+            ink_fade=not args.no_ink_fade,
+            blur=not args.no_blur,
+            warp=args.warp,
+            seed=args.seed,
+        )
+    try:
+        artifact = generate_document_image(
+            args.company_id,
+            args.document,
+            user_input=args.input,
+            model_name=args.model,
+            output_dir=args.output_dir,
+            figure_kinds=args.figure_kind,
+            a4_aspect=not args.no_a4,
+            distress=distress,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if args.keep_intermediates:
+        artifact.png_path.with_suffix(".md").write_text(
+            artifact.markdown, encoding="utf-8"
+        )
+        artifact.png_path.with_suffix(".html").write_text(
+            artifact.html, encoding="utf-8"
+        )
+    print(f"Wrote {artifact.png_path}")
+
+
 def main() -> None:
     """CLI entry point."""
     # Load .env at entry time (not import time) so TINYDB_PATH and the LLM
@@ -185,6 +327,8 @@ def main() -> None:
         _run_migrate(args)
     elif args.command == "document":
         _run_document(args)
+    elif args.command == "image":
+        _run_image(args)
 
 
 if __name__ == "__main__":

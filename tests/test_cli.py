@@ -42,6 +42,95 @@ class TestCliParser:
         assert args.document == "Onboarding Guide"
         assert args.output_dir == Path("docs")
 
+    def test_image_subcommand_defaults(self) -> None:
+        args = _build_parser().parse_args(
+            ["image", "--company-id", "2", "--document", "Invoice"]
+        )
+        assert args.command == "image"
+        assert args.company_id == 2
+        assert args.document == "Invoice"
+        assert args.input is None
+        assert args.output_dir is None
+        assert args.model is None
+        assert args.figure_kind == []
+        assert args.no_a4 is False
+        assert args.distress is False
+        assert args.no_stains is False
+        assert args.no_vignette is False
+        assert args.no_noise is False
+        assert args.no_ink_fade is False
+        assert args.no_blur is False
+        assert args.warp is False
+        assert args.stain_count == 4
+        assert args.seed is None
+        assert args.keep_intermediates is False
+
+    def test_image_subcommand_flags(self) -> None:
+        args = _build_parser().parse_args(
+            [
+                "image",
+                "--company-id",
+                "3",
+                "--document",
+                "Memo",
+                "--input",
+                "make it terse",
+                "--output-dir",
+                "imgs",
+                "--model",
+                "llama3",
+                "--figure-kind",
+                "bar",
+                "--figure-kind",
+                "line",
+                "--no-a4",
+                "--distress",
+                "--no-stains",
+                "--no-vignette",
+                "--no-noise",
+                "--no-ink-fade",
+                "--no-blur",
+                "--warp",
+                "--stain-count",
+                "7",
+                "--seed",
+                "42",
+                "--keep-intermediates",
+            ]
+        )
+        assert args.command == "image"
+        assert args.company_id == 3
+        assert args.document == "Memo"
+        assert args.input == "make it terse"
+        assert args.output_dir == Path("imgs")
+        assert args.model == "llama3"
+        assert args.figure_kind == ["bar", "line"]
+        assert args.no_a4 is True
+        assert args.distress is True
+        assert args.no_stains is True
+        assert args.no_vignette is True
+        assert args.no_noise is True
+        assert args.no_ink_fade is True
+        assert args.no_blur is True
+        assert args.warp is True
+        assert args.stain_count == 7
+        assert args.seed == 42
+        assert args.keep_intermediates is True
+
+    def test_image_subcommand_rejects_bad_figure_kind(self) -> None:
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(
+                [
+                    "image",
+                    "--company-id",
+                    "1",
+                    "--document",
+                    "Memo",
+                    "--figure-kind",
+                    "sparkles",
+                ]
+            )
+
     def test_migrate(self) -> None:
         args = _build_parser().parse_args(["migrate"])
         assert args.command == "migrate"
