@@ -14,7 +14,7 @@ import {
 /** Max rows rendered per sheet to keep the browser responsive. */
 const MAX_SHEET_ROWS = 500
 
-type PreviewKind = "pdf" | "sheet" | "docx" | "unsupported"
+type PreviewKind = "pdf" | "sheet" | "docx" | "image" | "unsupported"
 
 /** Which renderer to use for a filetype (lowercase suffix). */
 function previewKind(filetype: string): PreviewKind {
@@ -22,6 +22,7 @@ function previewKind(filetype: string): PreviewKind {
   if (ft === "pdf") return "pdf"
   if (ft === "xlsx" || ft === "xls" || ft === "csv") return "sheet"
   if (ft === "docx") return "docx"
+  if (ft === "png") return "image"
   return "unsupported"
 }
 
@@ -88,7 +89,7 @@ export function DocumentViewDialog({ doc, onClose }: DocumentViewDialogProps) {
     setActiveSheet(0)
 
     const kind = previewKind(doc.filetype)
-    if (kind === "pdf" || kind === "unsupported") {
+    if (kind === "pdf" || kind === "image" || kind === "unsupported") {
       setStatus("ready")
       return
     }
@@ -170,6 +171,19 @@ export function DocumentViewDialog({ doc, onClose }: DocumentViewDialogProps) {
               title={doc.filename}
               className="h-full w-full"
             />
+          )}
+          {status === "ready" && kind === "image" && (
+            <div className="flex h-full items-center justify-center overflow-auto p-4">
+              <img
+                src={api.documentPreviewUrl(doc.id)}
+                alt={doc.filename}
+                className="max-h-full max-w-full object-contain"
+                onError={() => {
+                  setError("Could not load this image")
+                  setStatus("error")
+                }}
+              />
+            </div>
           )}
           {status === "ready" && kind === "sheet" && (
             <div className="h-full overflow-auto">

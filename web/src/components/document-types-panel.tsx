@@ -6,6 +6,7 @@ import {
   FileDown,
   FileSpreadsheet,
   FileText,
+  Image as ImageIcon,
   Pencil,
   RefreshCw,
   Search,
@@ -52,6 +53,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { GenerateDocumentTypesDialog } from "@/components/generate-dialogs"
 import { GeneratePdfDialog } from "@/components/generate-pdf-dialog"
 import { GenerateExcelDialog } from "@/components/generate-excel-dialog"
+import { GenerateImageDialog } from "@/components/generate-image-dialog"
 
 /** localStorage key for the last selected company (survives tab switches). */
 const LAST_COMPANY_KEY = "document-gen:documents:last-company"
@@ -126,6 +128,7 @@ export function DocumentTypesPanel({
   const [generateOpen, setGenerateOpen] = useState(false)
   const [pdfTarget, setPdfTarget] = useState<DocumentTypeDoc | null>(null)
   const [excelTarget, setExcelTarget] = useState<DocumentTypeDoc | null>(null)
+  const [imageTarget, setImageTarget] = useState<DocumentTypeDoc | null>(null)
   /** Document type awaiting delete confirmation. */
   const [deletingType, setDeletingType] = useState<DocumentTypeDoc | null>(null)
   const [deleting, setDeleting] = useState(false)
@@ -556,6 +559,20 @@ export function DocumentTypesPanel({
                             <FileSpreadsheet />
                             Generate Excel
                           </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={pdfDir === null}
+                            title={
+                              pdfDir === null
+                                ? "Set a document output directory in Settings to enable image generation"
+                                : `Generate a PNG image (saved to ${pdfDir})`
+                            }
+                            onClick={() => setImageTarget(docType)}
+                          >
+                            <ImageIcon />
+                            Generate Image
+                          </Button>
                         </div>
                       </div>
                     )}
@@ -810,6 +827,17 @@ export function DocumentTypesPanel({
           }}
           company={selected}
           docType={excelTarget}
+          models={models}
+        />
+      )}
+      {selected && imageTarget && (
+        <GenerateImageDialog
+          open={imageTarget !== null}
+          onOpenChange={(open) => {
+            if (!open) setImageTarget(null)
+          }}
+          company={selected}
+          docType={imageTarget}
           models={models}
         />
       )}

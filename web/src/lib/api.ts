@@ -145,6 +145,42 @@ export interface ExcelJobResult {
   report: string
 }
 
+/** Per-effect controls for the PNG distress (scanned/aged) pass. */
+export interface DistressOptions {
+  /** Master switch; false = perfect (undistressed) image. */
+  enabled: boolean
+  paper_aging: boolean
+  vignette: boolean
+  vignette_strength: number
+  stains: boolean
+  stain_count: number
+  noise: boolean
+  noise_strength: number
+  ink_fade: boolean
+  blur: boolean
+  warp: boolean
+  warp_strength: number
+  /** Random seed; null = company seed. */
+  seed: number | null
+}
+
+export interface DocumentImageRequest {
+  report: string
+  user_input: string | null
+  model: string | null
+  figure_kinds?: FigureKind[]
+  /** Lock the page to A4 portrait; false = content-sized page. */
+  a4_aspect?: boolean
+  distress?: DistressOptions
+  /** Persist the per-stage generation trace on the document record. */
+  gen_tracing?: boolean
+}
+
+export interface ImageJobResult {
+  png: string
+  report: string
+}
+
 export interface CompanySummary {
   id: number
   name: string
@@ -259,6 +295,13 @@ export const api = {
     }),
   documentExcelUrl: (id: number, filename: string) =>
     `/api/companies/${id}/excel/${encodeURIComponent(filename)}`,
+  startDocumentImage: (id: number, body: DocumentImageRequest) =>
+    request<JobStart>(`/api/companies/${id}/image`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  documentImageUrl: (id: number, filename: string) =>
+    `/api/companies/${id}/image/${encodeURIComponent(filename)}`,
   testSettings: (purpose: "chat" | "embed", endpoint: EndpointConfig) =>
     request<SettingsTestResult>("/api/settings/test", {
       method: "POST",
