@@ -14,8 +14,9 @@ import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 
 /**
- * Defaults mirror `document_gen.models.distress.DistressOptions` (with
- * `enabled` on, since the toolbar only renders for distressed images).
+ * Defaults mirroring `document_gen.models.distress.DistressOptions`
+ * (with `enabled` on). Used only when the document has no generation
+ * trace at all, in which case the toolbar is disabled anyway.
  */
 const DEFAULT_OPTIONS: DistressOptions = {
   enabled: true,
@@ -33,7 +34,30 @@ const DEFAULT_OPTIONS: DistressOptions = {
   seed: null,
 }
 
+/**
+ * Starting state for traced images generated without distress: no
+ * effect flag is set and every value is 0, so turning the Distress
+ * toggle on starts from a clean render. Options that were not applied
+ * at generation are never preset.
+ */
+const CLEAN_OPTIONS: DistressOptions = {
+  enabled: false,
+  paper_aging: false,
+  vignette: false,
+  vignette_strength: 0,
+  stains: false,
+  stain_count: 0,
+  noise: false,
+  noise_strength: 0,
+  ink_fade: false,
+  blur: false,
+  warp: false,
+  warp_strength: 0,
+  seed: null,
+}
+
 const SWITCHES: { key: keyof DistressOptions; label: string }[] = [
+  { key: "enabled", label: "Distress" },
   { key: "paper_aging", label: "Paper aging" },
   { key: "vignette", label: "Vignette" },
   { key: "stains", label: "Stains" },
@@ -103,15 +127,26 @@ function distressTrace(
     : null
 }
 
-/** Options from the generation trace, falling back to defaults. */
+/**
+ * Options exactly as recorded in the generation trace, so the toolbar
+ * presets match the persisted render. Traced images generated without
+ * distress start from :const:`CLEAN_OPTIONS` (all flags false, values
+ * 0) even though the trace stores the unused per-effect defaults; only
+ * untraced documents fall back to :const:`DEFAULT_OPTIONS`.
+ */
 function initialOptions(doc: DocumentRecord): DistressOptions {
-  const raw = distressTrace(doc)?.options
-  if (typeof raw !== "object" || raw === null) return DEFAULT_OPTIONS
+  const trace = distressTrace(doc)
+  if (trace === null) return DEFAULT_OPTIONS
+  const enabled = typeof trace.enabled === "boolean" ? trace.enabled : false
+  if (!enabled) return CLEAN_OPTIONS
+  const raw = trace.options
+  if (typeof raw !== "object" || raw === null) {
+    return { ...CLEAN_OPTIONS, enabled: true }
+  }
   const o = raw as Partial<DistressOptions>
   return {
-    ...DEFAULT_OPTIONS,
+    ...CLEAN_OPTIONS,
     ...o,
-    // The toolbar only makes sense on a distressed image.
     enabled: true,
     seed: typeof o.seed === "number" ? o.seed : null,
   }
@@ -239,7 +274,7 @@ export function DistressToolbar({
             </span>
             <Switch
               checked={Boolean(options[key])}
-              disabled={!editable}
+              disabled={!editable || (key !== "enabled" && !options.enabled)}
               onCheckedChange={(checked) =>
                 setOptions((o) => ({ ...o, [key]: checked }))
               }
@@ -251,7 +286,7 @@ export function DistressToolbar({
             <span
               className={
                 "text-xs " +
-                (editable && !off(options)
+                (editable && options.enabled && !off(options)
                   ? "text-foreground"
                   : "text-muted-foreground")
               }
@@ -263,7 +298,7 @@ export function DistressToolbar({
               min={min}
               max={max}
               step={step}
-              disabled={!editable || off(options)}
+              disabled={!editable || !options.enabled || off(options)}
               onValueChange={(v) =>
                 setOptions((o) => ({ ...o, [key]: v[0] }))
               }

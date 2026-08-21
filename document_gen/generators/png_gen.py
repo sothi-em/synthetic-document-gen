@@ -66,7 +66,9 @@ def distress_array(
 
     Stage pipeline (each stage gated by its flag, in this order):
     paper tint -> vignette -> stains -> noise -> ink re-stamp (soft-alpha
-    blend) -> warp -> blur.
+    blend) -> warp -> blur. The ink re-stamp always runs when the paper
+    tint is on (it restores the document over the solid paper base);
+    ``ink_fade`` alone controls only the faded-ink tint.
 
     The noise and warp stages are driven by *seed*. Stain positions and
     radii are drawn from a non-seeded OS-entropy RNG and intentionally
@@ -144,11 +146,16 @@ def distress_array(
 
     # 5. Ink re-stamp: blend the clean render's ink back over the dirty
     #    paper using a luminance-based soft alpha (no hard threshold, so
-    #    it works on colored renders too).
-    if options.ink_fade:
+    #    it works on colored renders too). Always runs when the paper
+    #    tint replaced the base (otherwise the page would be blank);
+    #    ``ink_fade`` only controls the faded-ink tint.
+    if options.paper_aging or options.ink_fade:
         luminance = cv2.cvtColor(clean, cv2.COLOR_BGR2GRAY).astype(np.float32)
         alpha = ((255.0 - luminance) / 255.0)[:, :, None]
-        ink_px = 30.0 * 0.85 + paper.astype(np.float32) * 0.15
+        if options.ink_fade:
+            ink_px = 30.0 * 0.85 + paper.astype(np.float32) * 0.15
+        else:
+            ink_px = np.full_like(paper, 30.0, dtype=np.float32)
         paper = (alpha * ink_px + (1.0 - alpha) * paper.astype(np.float32)).astype(
             np.uint8
         )
@@ -182,7 +189,8 @@ def distress_image(path: Path, options: DistressOptions, seed: int) -> None:
 
     Stage pipeline (each stage gated by its flag, in this order):
     paper tint -> vignette -> stains -> noise -> ink re-stamp (soft-alpha
-    blend) -> warp -> blur. The PNG at *path* is overwritten.
+    blend; always runs when the paper tint is on) -> warp -> blur. The
+    PNG at *path* is overwritten.
 
     Stain positions and radii are drawn from a non-seeded OS-entropy RNG
     and intentionally vary on every run. The noise and warp stages are

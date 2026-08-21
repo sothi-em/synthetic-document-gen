@@ -149,6 +149,28 @@ class TestDistressImage:
         bg = _background(_read(png_path)).astype(np.float32)
         assert bg.std() > _background(clean).astype(np.float32).std() * 3
 
+    def test_paper_aging_without_ink_fade_keeps_content(self, png_path: Path) -> None:
+        # Regression: the paper tint replaces the base image, so the ink
+        # re-stamp must still run when ink_fade is off (crisp ink, not a
+        # blank cream page).
+        clean = _clean_image()
+        distress_image(
+            png_path,
+            _options(
+                paper_aging=True,
+                ink_fade=False,
+                stains=False,
+                vignette=False,
+                noise=False,
+            ),
+            seed=42,
+        )
+        img = _read(png_path)
+        ink_mask = cv2.cvtColor(clean, cv2.COLOR_BGR2GRAY) < 128
+        assert ink_mask.any()
+        # The document's text/lines are still present (dark ink pixels).
+        assert img[ink_mask].mean() < 100
+
     def test_ink_fade_softens_text(self, png_path: Path) -> None:
         clean = _clean_image()
         distress_image(png_path, _options(ink_fade=True), seed=42)
