@@ -431,6 +431,35 @@ class TestReportDocuments:
         by_report = document_query.list_documents(document_type_id=first_report)
         assert [item["document_type_id"] for item in by_report] == [first_report]
 
+    def test_update_document_size(self, tmp_path) -> None:
+        company_id, report_id = self._company_with_report()
+        file_path = tmp_path / "acme_guide.pdf"
+        file_path.write_bytes(b"x" * 1024)
+        doc_id = document_query.save_document(company_id, report_id, file_path)
+        record = document_query.get_document(doc_id)
+        assert record is not None
+        assert record["size_kb"] == 1.0
+
+        # Rewriting the file in place is picked up by the refresh.
+        file_path.write_bytes(b"x" * 3072)
+        updated = document_query.update_document_size(doc_id)
+        assert updated is not None
+        assert updated["id"] == doc_id
+        assert updated["size_kb"] == 3.0
+        # The other stored fields are left untouched.
+        assert updated["filename"] == "acme_guide.pdf"
+        assert updated["filepath"] == str(file_path.resolve())
+
+    def test_update_document_size_missing(self, tmp_path) -> None:
+        assert document_query.update_document_size(999999) is None
+        company_id, report_id = self._company_with_report()
+        file_path = tmp_path / "acme_guide.pdf"
+        file_path.write_bytes(b"x")
+        doc_id = document_query.save_document(company_id, report_id, file_path)
+        file_path.unlink()
+        with pytest.raises(FileNotFoundError):
+            document_query.update_document_size(doc_id)
+
     def test_get_document_type_id(self) -> None:
         company_id, report_id = self._company_with_report()
         assert (

@@ -1420,3 +1420,194 @@ class TestDocuments:
         response = client.delete(f"/api/documents/{doc_id}")
         assert response.status_code == 200
         assert client.get("/api/documents").json() == []
+
+
+# ---------------------------------------------------------------------------
+# Distress editor (live preview + save)
+# ---------------------------------------------------------------------------
+
+
+class TestDistressEditor:
+    @staticmethod
+    def _png_bytes() -> bytes:
+        import cv2
+        import numpy as np
+
+        img = np.ones((400, 300, 3), dtype=np.uint8) * 255
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(img, "TEST DOCUMENT", (20, 60), font, 0.8, 0, 2, cv2.LINE_AA)
+        return cv2.imencode(".png", img)[1].tobytes()
+
+    @staticmethod
+    def _body() -> dict:
+        return {
+            "distress": {
+                "enabled": True,
+                "stains": True,
+                "stain_count": 3,
+                "paper_aging": False,
+                "vignette": False,
+                "noise": False,
+                "ink_fade": False,
+                "blur": False,
+                "warp": False,
+            },
+            "seed": 42,
+            "stain_seed": 123,
+        }
+
+    def _record(
+        self,
+        company_id: int,
+        tmp_path: Path,
+        *,
+        with_trace: bool = True,
+        name: str = "acme_report.png",
+    ) -> int:
+        """Write a synthetic PNG (plus its stored original) and record it."""
+        file_path = tmp_path / name
+        file_path.write_bytes(self._png_bytes())
+        original = file_path.with_name(file_path.stem + "_original.png")
+        original.write_bytes(file_path.read_bytes())
+        report_id = document_query.get_document_types(company_id)[0]["id"]
+        gen_tracing = (
+            {
+                "stages": {
+                    "distress": {
+                        "seed": 42,
+                        "original_path": str(original),
+                    }
+                }
+            }
+            if with_trace
+            else None
+        )
+        return document_query.save_document(
+            company_id, report_id, file_path, gen_tracing=gen_tracing
+        )
+
+    def _original_path(self, tmp_path: Path, name: str = "acme_report.png") -> Path:
+        return (tmp_path / name).with_name(Path(name).stem + "_original.png")
+
+    def test_preview_returns_distressed_png(self, client, company_db, tmp_path) -> None:
+        from document_gen.generators.png_gen import distress_image_to_bytes
+        from document_gen.models import DistressOptions
+
+        doc_id = self._record(company_db[0], tmp_path)
+        response = client.post(
+            f"/api/documents/{doc_id}/image/distress-preview", json=self._body()
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.headers["content-disposition"] == "inline"
+        # The preview is exactly the server-side distress pipeline output.
+        expected = distress_image_to_bytes(
+            self._original_path(tmp_path).read_bytes(),
+            DistressOptions(**self._body()["distress"]),
+            42,
+            stain_seed=123,
+        )
+        assert response.content == expected
+        assert response.content.startswith(b"\x89PNG")
+
+    def test_preview_error_matrix(self, client, company_db, tmp_path) -> None:
+        # Unknown document.
+        assert (
+            client.post(
+                "/api/documents/999999/image/distress-preview", json=self._body()
+            ).status_code
+            == 404
+        )
+        # Non-PNG document.
+        pdf_id = self._record(company_db[0], tmp_path, name="notes.pdf")
+        (tmp_path / "notes.pdf").write_bytes(b"%PDF-1.4 fake")
+        assert (
+            client.post(
+                f"/api/documents/{pdf_id}/image/distress-preview", json=self._body()
+            ).status_code
+            == 400
+        )
+        # No generation trace stored.
+        no_trace_id = self._record(company_db[0], tmp_path, with_trace=False)
+        assert (
+            client.post(
+                f"/api/documents/{no_trace_id}/image/distress-preview",
+                json=self._body(),
+            ).status_code
+            == 409
+        )
+        # Trace present but the original file was deleted.
+        doc_id = self._record(company_db[0], tmp_path, name="ghost.png")
+        self._original_path(tmp_path, "ghost.png").unlink()
+        response = client.post(
+            f"/api/documents/{doc_id}/image/distress-preview", json=self._body()
+        )
+        assert response.status_code == 409
+        assert "No stored original" in response.json()["detail"]
+
+    def test_save_overwrites_document_keeps_original(
+        self, client, company_db, tmp_path
+    ) -> None:
+        from document_gen.generators.png_gen import distress_image_to_bytes
+        from document_gen.models import DistressOptions
+
+        doc_id = self._record(company_db[0], tmp_path)
+        original_path = self._original_path(tmp_path)
+        original_before = original_path.read_bytes()
+        document_before = (tmp_path / "acme_report.png").read_bytes()
+
+        response = client.post(
+            f"/api/documents/{doc_id}/image/distress-save", json=self._body()
+        )
+        assert response.status_code == 200
+
+        # The document file now holds the distressed render.
+        expected = distress_image_to_bytes(
+            original_before,
+            DistressOptions(**self._body()["distress"]),
+            42,
+            stain_seed=123,
+        )
+        assert (tmp_path / "acme_report.png").read_bytes() == expected
+        assert (tmp_path / "acme_report.png").read_bytes() != document_before
+        # The original is left untouched, so the document stays re-editable.
+        assert original_path.read_bytes() == original_before
+
+        # The returned record reflects the new file size.
+        record = response.json()
+        assert record["id"] == doc_id
+        assert record["size_kb"] == round(len(expected) / 1024, 2)
+        listed = document_query.get_document(doc_id)
+        assert listed is not None
+        assert listed["size_kb"] == record["size_kb"]
+
+    def test_save_error_matrix(self, client, company_db, tmp_path) -> None:
+        assert (
+            client.post(
+                "/api/documents/999999/image/distress-save", json=self._body()
+            ).status_code
+            == 404
+        )
+        pdf_id = self._record(company_db[0], tmp_path, name="notes.pdf")
+        (tmp_path / "notes.pdf").write_bytes(b"%PDF-1.4 fake")
+        assert (
+            client.post(
+                f"/api/documents/{pdf_id}/image/distress-save", json=self._body()
+            ).status_code
+            == 400
+        )
+        no_trace_id = self._record(company_db[0], tmp_path, with_trace=False)
+        assert (
+            client.post(
+                f"/api/documents/{no_trace_id}/image/distress-save", json=self._body()
+            ).status_code
+            == 409
+        )
+        doc_id = self._record(company_db[0], tmp_path, name="ghost.png")
+        self._original_path(tmp_path, "ghost.png").unlink()
+        assert (
+            client.post(
+                f"/api/documents/{doc_id}/image/distress-save", json=self._body()
+            ).status_code
+            == 409
+        )

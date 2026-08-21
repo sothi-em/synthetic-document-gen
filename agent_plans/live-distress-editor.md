@@ -115,7 +115,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Goal:** HTTP surface for live preview and persistence; document record size stays accurate.
 
-### Task 3.1 — `document_query.update_document_size` — [ ]
+### Task 3.1 — `document_query.update_document_size` — [x]
 
 **Files:** `document_gen/document_query.py`, `tests/test_document_query.py`
 
@@ -126,7 +126,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `uv run pytest tests/test_document_query.py` passes.
 
-### Task 3.2 — Request model + original-path helper — [ ]
+### Task 3.2 — Request model + original-path helper — [x]
 
 **Files:** `document_gen/server.py`
 
@@ -145,7 +145,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `uv run pytest` passes (no behavior change yet).
 
-### Task 3.3 — Preview endpoint — [ ]
+### Task 3.3 — Preview endpoint — [x]
 
 **Files:** `document_gen/server.py`
 
@@ -156,7 +156,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** import check + `uv run pytest` passes.
 
-### Task 3.4 — Save endpoint — [ ]
+### Task 3.4 — Save endpoint — [x]
 
 **Files:** `document_gen/server.py`
 
@@ -167,7 +167,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `uv run pytest` passes.
 
-### Task 3.5 — Server tests — [ ]
+### Task 3.5 — Server tests — [x]
 
 **Files:** `tests/test_server.py`
 
@@ -183,7 +183,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Goal:** TypeScript surface for the new endpoints + trace helpers.
 
-### Task 4.1 — Types and helpers — [ ]
+### Task 4.1 — Types and helpers — [x]
 
 **Files:** `web/src/lib/api.ts`
 
@@ -193,7 +193,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `cd web && pnpm build` passes.
 
-### Task 4.2 — Endpoint methods — [ ]
+### Task 4.2 — Endpoint methods — [x]
 
 **Files:** `web/src/lib/api.ts`
 

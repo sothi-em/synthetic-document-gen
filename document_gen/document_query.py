@@ -709,6 +709,36 @@ def rename_document(doc_id: int, new_base: str) -> dict[str, Any] | None:
     return _doc_to_dict(doc) if doc is not None else None
 
 
+def update_document_size(doc_id: int) -> dict[str, Any] | None:
+    """Recompute the stored size of one document from its file on disk.
+
+    Used after a document file is rewritten in place (e.g. a re-run
+    distress pass) so the record's ``size_kb`` stays accurate.
+
+    Args:
+        doc_id: The TinyDB ``doc_id`` of the document to refresh.
+
+    Returns:
+        The updated record as a plain dict with an ``id`` key, or
+        ``None`` when no record with that id exists.
+
+    Raises:
+        FileNotFoundError: When the file the record points at no longer
+            exists on disk.
+    """
+    with _LOCK:
+        table = _documents_table()
+        doc = table.get(doc_id=doc_id)
+        if doc is None:
+            return None
+        path = Path(doc["filepath"])
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        table.update({"size_kb": _document_fields(path)["size_kb"]}, doc_ids=[doc_id])
+        doc = table.get(doc_id=doc_id)
+    return _doc_to_dict(doc) if doc is not None else None
+
+
 def get_document_type_id(company_id: int, document: str) -> int | None:
     """Resolve a document type name or 0-based index to its TinyDB ``doc_id``.
 

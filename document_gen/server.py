@@ -26,12 +26,13 @@ from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 
 from document_gen import document_excel, document_pdf, document_png, document_query, llm
+from document_gen.generators.png_gen import distress_image_to_bytes
 from document_gen.models import (
     FIGURE_KINDS,
     CompanyProfile,
@@ -144,6 +145,16 @@ class RenameDocumentRequest(BaseModel):
     filename: str = Field(
         min_length=1,
         description="New base name (without extension); the extension is preserved.",
+    )
+
+
+class DistressEditRequest(BaseModel):
+    """Request body for the distress preview/save endpoints."""
+
+    distress: DistressOptions
+    seed: int = Field(description="Noise/warp seed (from the generation trace).")
+    stain_seed: int = Field(
+        description="Editor-derived stain seed (deterministic per document)."
     )
 
 
@@ -1304,6 +1315,99 @@ def rename_document(doc_id: int, payload: RenameDocumentRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return updated
+
+
+def _original_image_path(record: dict) -> Path | None:
+    """Return the stored pre-distress original for a PNG document record.
+
+    The path lives at ``gen_tracing.stages.distress.original_path`` and is
+    only written when the document was generated with tracing on and
+    distress enabled. Returns ``None`` when the trace is missing, the
+    field is absent, or the file no longer exists on disk.
+    """
+    trace = record.get("gen_tracing")
+    if not isinstance(trace, dict):
+        return None
+    stages = trace.get("stages")
+    if not isinstance(stages, dict):
+        return None
+    distress = stages.get("distress")
+    if not isinstance(distress, dict):
+        return None
+    original = distress.get("original_path")
+    if not isinstance(original, str) or not original:
+        return None
+    path = Path(original)
+    return path if path.is_file() else None
+
+
+def _distress_source_bytes(doc_id: int) -> tuple[dict, bytes]:
+    """Load a PNG document's stored original for the distress editor.
+
+    Shared by the preview and save endpoints: performs the 404/400/409
+    checks and returns the record plus the original's bytes.
+    """
+    record = document_query.get_document(doc_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if record["filetype"] != "png":
+        raise HTTPException(status_code=400, detail="Document is not a PNG image")
+    original = _original_image_path(record)
+    if original is None:
+        raise HTTPException(
+            status_code=409, detail="No stored original image for this document"
+        )
+    return record, original.read_bytes()
+
+
+@app.post("/api/documents/{doc_id}/image/distress-preview")
+def distress_preview(doc_id: int, payload: DistressEditRequest) -> Response:
+    """Render the distressed image for the live editor (not persisted).
+
+    Re-runs the exact server-side distress pipeline on the stored
+    original, so the preview is byte-identical to what the save endpoint
+    will persist. Sync ``def`` on purpose: FastAPI runs it in the thread
+    pool so the cv2 work does not block the event loop.
+    """
+    _, original_bytes = _distress_source_bytes(doc_id)
+    try:
+        png_bytes = distress_image_to_bytes(
+            original_bytes, payload.distress, payload.seed, payload.stain_seed
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"Content-Disposition": "inline"},
+    )
+
+
+@app.post("/api/documents/{doc_id}/image/distress-save")
+def distress_save(doc_id: int, payload: DistressEditRequest) -> dict:
+    """Persist the editor's distressed render over the document file.
+
+    The render is re-derived from the stored original (which is left
+    untouched, so the document stays re-editable) and written over the
+    record's ``filepath``; the record's ``size_kb`` is refreshed.
+    """
+    record, original_bytes = _distress_source_bytes(doc_id)
+    try:
+        png_bytes = distress_image_to_bytes(
+            original_bytes, payload.distress, payload.seed, payload.stain_seed
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    Path(record["filepath"]).write_bytes(png_bytes)
+    try:
+        updated = document_query.update_document_size(doc_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail="Document file not found on disk"
+        ) from exc
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Document not found")
     return updated
 
 

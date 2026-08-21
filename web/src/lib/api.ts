@@ -247,6 +247,41 @@ export interface CompanyDetail {
   created_at: string
 }
 
+/** Path of the stored pre-distress original, if the trace has one.
+ *
+ * Defensive navigation: `gen_tracing` is an opaque record, and the
+ * field only exists for PNG documents generated with tracing on and
+ * distress enabled.
+ */
+export function originalImagePath(doc: DocumentRecord): string | null {
+  const trace = doc.gen_tracing
+  if (!trace) return null
+  const stages = trace.stages
+  if (typeof stages !== "object" || stages === null) return null
+  const distress = (stages as Record<string, unknown>).distress
+  if (typeof distress !== "object" || distress === null) return null
+  const original = (distress as Record<string, unknown>).original_path
+  return typeof original === "string" && original ? original : null
+}
+
+/** Deterministic stain seed derived from the document id.
+ *
+ * Preview and save must always use the same value so the browser
+ * preview is byte-identical to what the server persists.
+ */
+export function stainSeedFor(docId: number): number {
+  return docId * 1000003
+}
+
+/** Body for the distress preview/save endpoints. */
+export interface DistressEditBody {
+  distress: DistressOptions
+  /** Noise/warp seed (from the generation trace). */
+  seed: number
+  /** Editor-derived stain seed (see `stainSeedFor`). */
+  stain_seed: number
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -346,6 +381,27 @@ export const api = {
   documentDownloadUrl: (id: number) => `/api/documents/${id}/download`,
   /** Serves the file inline (Content-Disposition: inline) for previews. */
   documentPreviewUrl: (id: number) => `/api/documents/${id}/preview`,
+  /** Live distress preview: re-renders the stored original server-side. */
+  distressPreview: async (docId: number, body: DistressEditBody) => {
+    const response = await fetch(
+      `/api/documents/${docId}/image/distress-preview`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    )
+    if (!response.ok) {
+      throw new Error(`${response.status}: ${await response.text()}`)
+    }
+    return response.blob()
+  },
+  /** Persist the distressed render over the document file. */
+  distressSave: (docId: number, body: DistressEditBody) =>
+    request<DocumentRecord>(`/api/documents/${docId}/image/distress-save`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   deleteDocument: (id: number) =>
     request<{ deleted: boolean }>(`/api/documents/${id}`, {
       method: "DELETE",
