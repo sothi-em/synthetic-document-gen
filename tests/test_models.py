@@ -361,6 +361,95 @@ class TestDistressOptions:
         restored = DistressOptions.model_validate_json(options.model_dump_json())
         assert restored == options
 
+    def test_backend_default_and_dump(self) -> None:
+        dumped = DistressOptions().model_dump()
+        assert dumped["backend"] == "augraphy"
+        # Every new augraphy toggle defaults to False (enabling one never
+        # changes an existing render's output).
+        new_toggles = [
+            "ink_bleed",
+            "bleed_through",
+            "letterpress",
+            "ink_mottling",
+            "ink_color_swap",
+            "hollow",
+            "dithering",
+            "dot_matrix",
+            "low_ink_periodic_lines",
+            "low_ink_random_lines",
+            "lines_degradation",
+            "noise_texturize",
+            "brightness_texturize",
+            "watermark",
+            "pattern_generator",
+            "voronoi_tessellation",
+            "delaunay_tessellation",
+            "paper_factory",
+            "bad_photo_copy",
+            "faxify",
+            "dirty_drum",
+            "dirty_rollers",
+            "dirty_screen",
+            "shadow_cast",
+            "lens_flare",
+            "reflected_light",
+            "brightness",
+            "gamma",
+            "color_shift",
+            "depth_blur",
+            "moire",
+            "lcd_pattern",
+            "jpeg_artifacts",
+            "double_exposure",
+            "folding",
+            "bindings",
+            "markup",
+            "scribbles",
+        ]
+        for field in new_toggles:
+            assert dumped[field] is False, field
+        assert dumped["watermark_word"] == "CONFIDENTIAL"
+        assert dumped["jpeg_quality"] == 50
+        assert dumped["fold_count"] == 2
+
+    @pytest.mark.parametrize(
+        ("field", "value", "clamped"),
+        [
+            ("jpeg_quality", 5, 10),
+            ("jpeg_quality", 100, 95),
+            ("fold_count", 0, 1),
+            ("fold_count", 9, 6),
+        ],
+    )
+    def test_new_numeric_clamping(
+        self, field: str, value: object, clamped: object
+    ) -> None:
+        options = DistressOptions(**{field: value})
+        assert getattr(options, field) == clamped
+
+    def test_watermark_word_stripped_and_capped(self) -> None:
+        options = DistressOptions(watermark_word="  SECRET PLAN  ")
+        assert options.watermark_word == "SECRET PLAN"
+        options = DistressOptions(watermark_word="x" * 100)
+        assert len(options.watermark_word) == 40
+
+    def test_backend_rejects_unknown_value(self) -> None:
+        with pytest.raises(ValueError):
+            DistressOptions(backend="bogus")
+
+    def test_legacy_trace_payload_still_validates(self) -> None:
+        # Traces written before the migration contain only the original
+        # fields; they must validate with backend defaulting to "augraphy".
+        payload = (
+            '{"enabled": true, "paper_aging": true, "vignette": true, '
+            '"vignette_strength": 0.3, "stains": true, "stain_count": 4, '
+            '"noise": true, "noise_strength": 12.0, "ink_fade": true, '
+            '"blur": true, "warp": false, "warp_strength": 0.5, "seed": 7}'
+        )
+        options = DistressOptions.model_validate_json(payload)
+        assert options.backend == "augraphy"
+        assert options.ink_bleed is False
+
 
 class TestExcelPlan:
     def test_full_plan(self) -> None:

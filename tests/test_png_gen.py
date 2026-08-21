@@ -98,7 +98,8 @@ class TestDistressImage:
         assert after.shape == _clean_image().shape
 
     def test_paper_aging_tints_cream(self, png_path: Path) -> None:
-        distress_image(png_path, _options(paper_aging=True), seed=42)
+        # Legacy backend: encodes the old hand-rolled cream tint look.
+        distress_image(png_path, _options(paper_aging=True, backend="legacy"), seed=42)
         b, g, r = _background(_read(png_path)).mean(axis=(0, 1))
         # Cream paper: red channel warmest, blue coolest.
         assert r > g > b
@@ -109,9 +110,16 @@ class TestDistressImage:
         assert abs(r - g) < 3 and abs(g - b) < 3
 
     def test_vignette_darkens_edges(self, png_path: Path) -> None:
+        # Legacy backend: encodes the old hand-rolled radial vignette look.
         distress_image(
             png_path,
-            _options(paper_aging=True, vignette=True, stains=False, noise=False),
+            _options(
+                paper_aging=True,
+                vignette=True,
+                stains=False,
+                noise=False,
+                backend="legacy",
+            ),
             seed=42,
         )
         img = _read(png_path).astype(np.float32)
@@ -172,8 +180,9 @@ class TestDistressImage:
         assert img[ink_mask].mean() < 100
 
     def test_ink_fade_softens_text(self, png_path: Path) -> None:
+        # Legacy backend: encodes the old hand-rolled 85/15 ink blend.
         clean = _clean_image()
-        distress_image(png_path, _options(ink_fade=True), seed=42)
+        distress_image(png_path, _options(ink_fade=True, backend="legacy"), seed=42)
         img = _read(png_path)
         ink_mask = cv2.cvtColor(clean, cv2.COLOR_BGR2GRAY) < 128
         assert ink_mask.any()
@@ -193,9 +202,13 @@ class TestDistressImage:
         assert not np.array_equal(img, _clean_image())
 
     def test_blur_smooths_image(self, png_path: Path) -> None:
+        # Legacy backend: the augraphy paper effects add their own
+        # texture, so the gradient comparison encodes the old look.
         distress_image(
             png_path,
-            _options(blur=True, noise=False, stains=False, vignette=False),
+            _options(
+                blur=True, noise=False, stains=False, vignette=False, backend="legacy"
+            ),
             seed=42,
         )
         img = _read(png_path).astype(np.float32)
@@ -234,12 +247,15 @@ class TestDistressImage:
         assert p1.read_bytes() != p3.read_bytes()
 
     def test_stain_positions_vary_per_run(self, tmp_path: Path) -> None:
-        # Same seed, stains enabled: the two outputs must differ because
-        # stain centers/radii come from OS entropy, not the seed.
+        # Legacy backend only: same seed, stains enabled, the two outputs
+        # must differ because stain centers/radii come from OS entropy,
+        # not the seed. (On the augraphy backend stains are seeded.)
         p1, p2 = (tmp_path / f"img{i}.png" for i in range(2))
         for p in (p1, p2):
             assert cv2.imwrite(str(p), _clean_image())
-        opts = _options(stains=True, stain_count=10, noise=False, vignette=False)
+        opts = _options(
+            stains=True, stain_count=10, noise=False, vignette=False, backend="legacy"
+        )
         distress_image(p1, opts, seed=7)
         distress_image(p2, opts, seed=7)
         assert p1.read_bytes() != p2.read_bytes()
@@ -266,10 +282,13 @@ class TestStainSeed:
         assert out1 != out2
 
     def test_unseeded_stains_still_vary(self) -> None:
-        # stain_seed=None keeps the SystemRandom path: two runs with the
-        # same (image, options, seed) must still differ.
+        # Legacy backend only: stain_seed=None keeps the SystemRandom
+        # path, so two runs with the same (image, options, seed) must
+        # still differ. (On the augraphy backend stains are seeded.)
         data = _clean_bytes()
-        opts = _stain_only_options()
+        opts = _options(
+            stains=True, stain_count=10, noise=False, vignette=False, backend="legacy"
+        )
         out1 = distress_image_to_bytes(data, opts, seed=7)
         out2 = distress_image_to_bytes(data, opts, seed=7)
         assert out1 != out2
@@ -286,13 +305,13 @@ class TestStainSeed:
 
 class TestDistressImageToBytes:
     def test_matches_in_place_for_same_inputs(self, tmp_path: Path) -> None:
-        # Stains off, so the stain seed is irrelevant: the byte API and
-        # the in-place API must produce byte-identical PNGs.
+        # The byte API and the in-place API must produce byte-identical
+        # PNGs for the same (image, options, seed, stain_seed) inputs.
         path = tmp_path / "img.png"
         data = _clean_bytes()
         assert cv2.imwrite(str(path), _clean_image())
         opts = _options(stains=False)
-        distressed_bytes = distress_image_to_bytes(data, opts, seed=7, stain_seed=1)
+        distressed_bytes = distress_image_to_bytes(data, opts, seed=7)
         distress_image(path, opts, seed=7)
         assert distressed_bytes == path.read_bytes()
 
