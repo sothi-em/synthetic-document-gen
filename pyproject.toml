@@ -10,6 +10,7 @@ dependencies = [
     "matplotlib>=3.8.0",
     "ollama>=0.6.1",
     "openai>=1.0.0",
+    "opencv-python-headless>=4.10.0",
     "openpyxl>=3.1.5",
     "python-docx>=1.1.2",
     "pydantic>=2.12.5",

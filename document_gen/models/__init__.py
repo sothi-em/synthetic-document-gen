@@ -21,6 +21,9 @@ from document_gen.models.figures import (
 from document_gen.models.document import (
     DocumentPlan,
 )
+from document_gen.models.distress import (
+    DistressOptions,
+)
 from document_gen.models.excel import (
     EXCEL_FAKER_FIELDS,
     BorderStyle,
@@ -54,6 +57,8 @@ __all__ = [
     "FigureSpec",
     # document
     "DocumentPlan",
+    # distress
+    "DistressOptions",
     # excel
     "EXCEL_FAKER_FIELDS",
     "BorderStyle",

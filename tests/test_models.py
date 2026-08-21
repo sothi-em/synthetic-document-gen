@@ -15,6 +15,7 @@ from document_gen.models import (
     Column,
     CompanyProfile,
     DocumentType,
+    DistressOptions,
     ExcelDoc,
     ExcelPlan,
     FigurePlacement,
@@ -305,6 +306,60 @@ class TestSheetFigures:
     def test_with_figures(self) -> None:
         sheet = Sheet(name="Data", figures=[FigurePlacement(index=1, anchor="A12")])
         assert sheet.figures[0].anchor == "A12"
+
+
+class TestDistressOptions:
+    def test_defaults(self) -> None:
+        options = DistressOptions()
+        assert options.enabled is False
+        assert options.paper_aging is True
+        assert options.vignette is True
+        assert options.vignette_strength == 0.3
+        assert options.stains is True
+        assert options.stain_count == 4
+        assert options.noise is True
+        assert options.noise_strength == 12.0
+        assert options.ink_fade is True
+        assert options.blur is True
+        assert options.warp is False
+        assert options.warp_strength == 0.5
+        assert options.seed is None
+
+    @pytest.mark.parametrize(
+        ("field", "value", "clamped"),
+        [
+            ("vignette_strength", -0.5, 0.0),
+            ("vignette_strength", 2.0, 1.0),
+            ("warp_strength", 5.0, 1.0),
+            ("warp_strength", -1.0, 0.0),
+            ("noise_strength", -3.0, 0.0),
+            ("noise_strength", 100.0, 50.0),
+            ("stain_count", -2, 0),
+            ("stain_count", 99, 20),
+        ],
+    )
+    def test_range_clamping(self, field: str, value: object, clamped: object) -> None:
+        options = DistressOptions(**{field: value})
+        assert getattr(options, field) == clamped
+
+    def test_in_range_values_unchanged(self) -> None:
+        options = DistressOptions(
+            vignette_strength=0.7,
+            warp_strength=0.25,
+            noise_strength=20.0,
+            stain_count=10,
+            seed=42,
+        )
+        assert options.vignette_strength == 0.7
+        assert options.warp_strength == 0.25
+        assert options.noise_strength == 20.0
+        assert options.stain_count == 10
+        assert options.seed == 42
+
+    def test_serialization_round_trip(self) -> None:
+        options = DistressOptions(enabled=True, stain_count=7, seed=123)
+        restored = DistressOptions.model_validate_json(options.model_dump_json())
+        assert restored == options
 
 
 class TestExcelPlan:
