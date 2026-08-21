@@ -12,7 +12,9 @@ figures — grounded in a fictional company's profile.
 - **Synthetic company profiles** — invents fictional companies (name, industry,
   description, HQ, size) and the document types each would produce.
 - **Data-driven documents** — generates numbers, data tables, and figures
-  grounded in a company's profile, and renders them into official-looking PDFs.
+  grounded in a company's profile, and renders them into official-looking PDFs
+  or single-page PNG images (with an optional "distress" pass that makes them
+  look like scanned, aged documents).
 - **Data labels** — produces per-industry data-reporting labels and embeds them
   into a local ChromaDB collection for semantic search.
 - **Web UI + JSON API** — a browser-based front end for generating, browsing,
@@ -47,7 +49,8 @@ The following are planned but not yet implemented:
 3. **Image generation** — generate logos and other document imagery.
 4. **LLM-assisted document tweak/regenerate** — iteratively refine or
    regenerate individual documents with model assistance.
-5. **Other file formats** — support additional output formats beyond PDF.
+5. **Other file formats** — support additional output formats beyond PDF and
+   PNG.
 
 ## Workflow
 
@@ -60,6 +63,10 @@ The following are planned but not yet implemented:
    markdown, converts it to a mock official HTML document, and renders it to
    an A4 portrait PDF with WeasyPrint (see
    [PDF document generation](#pdf-document-generation)).
+4. **PNG image document generation** — same pipeline shape as the PDF
+   pipeline, but rendered to a single PNG page (A4 portrait or content-sized),
+   optionally post-processed with OpenCV to look like a scanned, aged
+   document (see [PNG image document generation](#png-image-document-generation)).
 
 ## Setup
 
@@ -69,6 +76,10 @@ Requires Python >= 3.13 and [uv](https://docs.astral.sh/uv/).
 uv sync --group dev          # install deps + dev tools (pytest, black)
 uv sync --group dev --extra embed   # also install chromadb for label embedding
 ```
+
+Core dependencies include `weasyprint` (PDF/PNG rendering) and
+`opencv-python-headless` (the optional "distress" post-processing pass for
+PNG image documents).
 
 Configure the LLM backends via `.env` (copy from `.env.example`). The chat
 (LLM) and embedding endpoints are independent — each can be an Ollama server
@@ -182,6 +193,37 @@ In the web UI, expand a company's document-type row and click **Generate PDF**
 output directory is configured on the **Settings** tab via a text field or
 an interactive directory browser that navigates the server's filesystem.
 
+### PNG image document generation
+
+Renders one of a company's document types into a **single-page PNG image**.
+The pipeline mirrors the PDF pipeline (plan → markdown → figures →
+HTML+CSS), but the HTML is constrained to one page and rendered to PNG with
+WeasyPrint. The page is A4 portrait by default; unchecking the A4 aspect
+ratio lets the page size itself to the content.
+
+Optionally, the PNG is post-processed with OpenCV (**distress**) to look like
+a scanned, aged document: paper tint, vignette, stains, scanner grain,
+faded ink, and (opt-in) a subtle warp, with a focus-loss blur. Stain
+positions are random on every run; the noise and warp stages are seeded
+(explicit `--seed` or the company seed).
+
+```powershell
+# Generate a PNG for a stored company's document type (A4, clean render)
+uv run document-gen image --company-id 1 --document "Onboarding Guide"
+
+# Content-sized page, distressed to look like a scanned document
+uv run document-gen image --company-id 1 --document "Operations Report" \
+    --no-a4 --distress --stain-count 6 --seed 42
+```
+
+The same output-directory resolution rules as the PDF command apply.
+
+In the web UI, expand a company's document-type row and click **Generate
+Image** — the dialog mirrors the PDF dialog (no Quick Doc), plus an **A4
+aspect ratio** checkbox (default on) and a **Distress document** checkbox
+that reveals per-effect toggles and strength inputs. Generated PNGs preview
+inline in the document view dialog.
+
 ### Web UI
 
 The frontend lives in `web/` (Vite + React + TypeScript, Tailwind CSS v4,
@@ -210,7 +252,7 @@ pnpm dev                     # http://localhost:5173 (uv run document-gen serve 
 
 - **Generate** tab — start a background job (count, optional instructions, industry, model) with live progress; review the generated companies and pick which ones to keep (work is split across a fixed pool of 4 threads).
 - **Companies** tab — browse/search the company store with a detail view.
-- **Document types** tab — browse a company's document types and generate PDFs.
+- **Document types** tab — browse a company's document types and generate PDFs and PNG images.
 - **Documents** tab — browse every generated file.
 - **Labels** tab — placeholder for the ChromaDB label tools.
 
@@ -221,7 +263,8 @@ Key API endpoints: `GET /api/health`, `GET /api/models`, `GET /api/industries`,
 `POST /api/companies/{id}/document-types/generate`, `GET|PUT|DELETE /api/settings`,
 `POST /api/settings/test`, `GET|PUT|DELETE /api/settings/documents`,
 `GET /api/fs/browse`, `POST /api/companies/{id}/pdf`,
-`GET /api/companies/{id}/pdf/{filename}`. Interactive docs at `/docs`.
+`GET /api/companies/{id}/pdf/{filename}`, `POST /api/companies/{id}/image`,
+`GET /api/companies/{id}/image/{filename}`. Interactive docs at `/docs`.
 
 ### Data labels (ChromaDB)
 
@@ -246,6 +289,7 @@ document-gen/
 │   ├── llm.py            # LLM backends (Ollama / OpenAI-compatible) + settings
 │   ├── prompts.py        # LLM prompt templates
 │   ├── document_pdf.py   # PDF document pipeline (markdown -> HTML -> WeasyPrint PDF)
+│   ├── document_png.py   # PNG image pipeline (single page + optional OpenCV distress pass)
 │   ├── labels.py         # Data-label generation + ChromaDB embedding
 │   ├── generators/       # File-format renderers (pdf_gen.html_to_pdf, ...)
 │   └── models/
@@ -253,6 +297,7 @@ document-gen/
 │       ├── document.py   # DocumentPlan (per-document layout/design plan)
 │       ├── figures.py    # Figure spec models (kinds, data, styling)
 │       ├── excel.py      # ExcelDoc, Sheet, Table, Column, Cell
+│       ├── distress.py   # DistressOptions (scanned/aged look for PNG documents)
 │       └── llm.py        # LLM settings models (chat/embedding backends)
 ├── web/                  # Frontend: Vite + React + TS, Tailwind v4, shadcn/ui (builds to web/dist)
 ├── tests/                # pytest tests + JSON fixtures in tests/fixtures/
