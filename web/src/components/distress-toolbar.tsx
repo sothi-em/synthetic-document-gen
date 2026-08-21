@@ -223,8 +223,9 @@ export function DistressToolbar({
     <div className="flex h-full flex-col gap-3 overflow-y-auto border-r bg-muted/30 p-3">
       {!editable && (
         <p className="text-xs text-muted-foreground">
-          No generation trace stored for this image — distress editing is
-          unavailable.
+          No original render stored for this image — distress editing is
+          unavailable. Generate a new PNG with tracing enabled to make it
+          editable.
         </p>
       )}
       <div className="flex flex-col gap-2">

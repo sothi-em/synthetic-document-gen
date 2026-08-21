@@ -250,8 +250,7 @@ export interface CompanyDetail {
 /** Path of the stored pre-distress original, if the trace has one.
  *
  * Defensive navigation: `gen_tracing` is an opaque record, and the
- * field only exists for PNG documents generated with tracing on and
- * distress enabled.
+ * field only exists for PNG documents generated with tracing on.
  */
 export function originalImagePath(doc: DocumentRecord): string | null {
   const trace = doc.gen_tracing

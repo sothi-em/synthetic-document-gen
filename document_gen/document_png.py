@@ -29,7 +29,8 @@ Stages (see :func:`generate_document_image`):
    random on every run). With tracing on, the untouched render is
    preserved first as ``<stem>_original.png`` next to the document and
    referenced from the trace
-   (``stages.distress.original_path``).
+   (``stages.distress.original_path``) — even when the distress pass is
+   disabled — so the image can later be distressed from the live editor.
 
 The pipeline aggregates a per-stage **trace** (prompts, outputs,
 timings) stored on the document record under the ``gen_tracing`` field
@@ -279,11 +280,12 @@ def generate_document_image(
             otherwise the company seed.
         gen_tracing: When ``True``, the aggregated per-stage trace
             (prompts, outputs, timings) is persisted on the
-            document record under the ``gen_tracing`` field. When the
-            distress pass runs under tracing, the untouched render is
-            also preserved as ``<stem>_original.png`` next to the
-            document and referenced from the trace
-            (``stages.distress.original_path``). The trace is always
+            document record under the ``gen_tracing`` field. Under
+            tracing, the untouched render is also preserved as
+            ``<stem>_original.png`` next to the document and referenced
+            from the trace (``stages.distress.original_path``) —
+            regardless of whether the distress pass runs — so the image
+            stays editable in the live distress editor. The trace is always
             built and returned on the artifact; this flag only
             controls database persistence.
 
@@ -498,21 +500,23 @@ def generate_document_image(
 
     # Stage 5: optional distress pass (scanned/aged look), in-place.
     # Noise and warp are seeded from the trace; stain positions are
-    # intentionally unseeded (vary per run). When tracing is on and the
-    # pass runs, the untouched render is preserved first as
-    # ``<stem>_original.png`` next to the document and referenced from
-    # the trace (``stages.distress.original_path``).
+    # intentionally unseeded (vary per run). When tracing is on, the
+    # untouched render is preserved first as ``<stem>_original.png``
+    # next to the document and referenced from the trace
+    # (``stages.distress.original_path``) — even when the pass is
+    # disabled — so the image can later be distressed from the live
+    # editor.
     distress_seed = distress_options.seed if distress_options.seed is not None else seed
     trace["stages"]["distress"] = {
         "enabled": distress_options.enabled,
         "options": distress_options.model_dump(mode="json"),
         "seed": distress_seed if distress_options.enabled else None,
     }
+    if gen_tracing:
+        original = save_original_png(path)
+        logger.info("Image document: preserved original render -> %s", original)
+        trace["stages"]["distress"]["original_path"] = str(original)
     if distress_options.enabled:
-        if gen_tracing:
-            original = save_original_png(path)
-            logger.info("Image document: preserved original render -> %s", original)
-            trace["stages"]["distress"]["original_path"] = str(original)
         t_step = time.perf_counter()
         logger.info("Image document: distress pass started (seed=%d)", distress_seed)
         distress_image(path, distress_options, distress_seed)

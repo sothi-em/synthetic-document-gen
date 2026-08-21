@@ -412,13 +412,19 @@ class TestGenerateDocumentImage:
         assert "original_path" not in stage
         assert not list(tmp_path.glob("*_original.png"))
 
-    def test_traced_clean_render_saves_no_original(
+    def test_traced_clean_render_saves_original(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Tracing preserves the original even when distress is off, so the
+        # image stays editable in the live distress editor.
         backend = FakeBackend()
         artifact = _run(tmp_path, monkeypatch, backend, gen_tracing=True)
-        assert "original_path" not in artifact.gen_tracing["stages"]["distress"]
-        assert not list(tmp_path.glob("*_original.png"))
+        stage = artifact.gen_tracing["stages"]["distress"]
+        original = Path(stage["original_path"])
+        assert original.is_file()
+        # No distress pass ran: the original is byte-identical to the
+        # document file.
+        assert original.read_bytes() == artifact.png_path.read_bytes()
 
     def test_distress_seed_falls_back_to_company_seed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

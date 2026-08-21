@@ -1322,9 +1322,9 @@ def _original_image_path(record: dict) -> Path | None:
     """Return the stored pre-distress original for a PNG document record.
 
     The path lives at ``gen_tracing.stages.distress.original_path`` and is
-    only written when the document was generated with tracing on and
-    distress enabled. Returns ``None`` when the trace is missing, the
-    field is absent, or the file no longer exists on disk.
+    written when the document was generated with tracing on. Returns
+    ``None`` when the trace is missing, the field is absent, or the file
+    no longer exists on disk.
     """
     trace = record.get("gen_tracing")
     if not isinstance(trace, dict):
