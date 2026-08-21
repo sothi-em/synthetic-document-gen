@@ -200,7 +200,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--seed",
         type=int,
         default=None,
-        help="Reproducibility seed for the distress pass (default: company seed)",
+        help=(
+            "Seed for the distress noise and warp stages (stain positions "
+            "are random every run; default: company seed)"
+        ),
     )
     image_parser.add_argument(
         "--keep-intermediates",

@@ -183,15 +183,29 @@ class TestDistressImage:
         distress_image(path, _options(), seed=42)
         assert _read(path).shape == (100, 100, 3)
 
-    def test_seed_determinism(self, tmp_path: Path) -> None:
+    def test_seed_determinism_without_stains(self, tmp_path: Path) -> None:
+        # Stains are intentionally unseeded, so byte-identity comparisons
+        # disable them; noise and warp must still be seed-deterministic.
         p1, p2, p3 = (tmp_path / f"img{i}.png" for i in range(3))
         for p in (p1, p2, p3):
             assert cv2.imwrite(str(p), _clean_image())
-        distress_image(p1, _options(), seed=7)
-        distress_image(p2, _options(), seed=7)
-        distress_image(p3, _options(), seed=8)
+        opts = _options(stains=False)
+        distress_image(p1, opts, seed=7)
+        distress_image(p2, opts, seed=7)
+        distress_image(p3, opts, seed=8)
         assert p1.read_bytes() == p2.read_bytes()
         assert p1.read_bytes() != p3.read_bytes()
+
+    def test_stain_positions_vary_per_run(self, tmp_path: Path) -> None:
+        # Same seed, stains enabled: the two outputs must differ because
+        # stain centers/radii come from OS entropy, not the seed.
+        p1, p2 = (tmp_path / f"img{i}.png" for i in range(2))
+        for p in (p1, p2):
+            assert cv2.imwrite(str(p), _clean_image())
+        opts = _options(stains=True, stain_count=10, noise=False, vignette=False)
+        distress_image(p1, opts, seed=7)
+        distress_image(p2, opts, seed=7)
+        assert p1.read_bytes() != p2.read_bytes()
 
 
 # ---------------------------------------------------------------------------

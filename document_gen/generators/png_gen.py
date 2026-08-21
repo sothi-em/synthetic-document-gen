@@ -40,16 +40,18 @@ def distress_image(path: Path, options: DistressOptions, seed: int) -> None:
     paper tint -> vignette -> stains -> noise -> ink re-stamp (soft-alpha
     blend) -> warp -> blur. The PNG at *path* is overwritten.
 
-    All randomness (stain centers, noise, warp offsets) is driven by
-    *seed*, so the same (image, options, seed) triple always produces the
-    same output.
+    Stain positions and radii are drawn from a non-seeded OS-entropy RNG
+    and intentionally vary on every run. The noise and warp stages are
+    driven by *seed*, so with stains disabled the same (image, options,
+    seed) triple always produces the same output.
 
     Args:
         path: Path to the source PNG; overwritten with the distressed image.
         options: Per-effect controls. When ``options.enabled`` is ``False``
             the pass is skipped entirely and the file is left untouched
             (perfect image).
-        seed: Random seed for all stochastic stages.
+        seed: Random seed for the noise and warp stages (stain positions
+            are intentionally unseeded).
 
     Raises:
         FileNotFoundError: If *path* does not exist (and the pass is enabled).
@@ -75,7 +77,6 @@ def distress_image(path: Path, options: DistressOptions, seed: int) -> None:
             clean[:, :, :3].astype(np.float32) * alpha + 255.0 * (1 - alpha)
         ).astype(np.uint8)
 
-    rng = random.Random(seed)
     h, w = clean.shape[:2]
 
     # 1. Paper tint (or the clean render itself as an untouched base).
@@ -94,13 +95,16 @@ def distress_image(path: Path, options: DistressOptions, seed: int) -> None:
         )
         paper = (paper.astype(np.float32) * factor[:, :, None]).astype(np.uint8)
 
-    # 3. Stains: low-frequency coffee/dirt blobs with differential darkening.
+    # 3. Stains: low-frequency coffee/dirt blobs with differential
+    #    darkening. Centers/radii use OS entropy so every run places the
+    #    stains differently (deliberately not reproducible).
     if options.stains and options.stain_count > 0:
+        stain_rng = random.SystemRandom()
         mask = np.zeros((h, w), dtype=np.uint8)
         for _ in range(options.stain_count):
-            cx = rng.randint(0, w - 1)
-            cy = rng.randint(0, h - 1)
-            radius = rng.randint(40, 120)
+            cx = stain_rng.randint(0, w - 1)
+            cy = stain_rng.randint(0, h - 1)
+            radius = stain_rng.randint(40, 120)
             cv2.circle(mask, (cx, cy), radius, 255, -1)
         # Kernel must be odd and no larger than the image.
         k = min(151, 2 * (min(h, w) // 2) + 1)

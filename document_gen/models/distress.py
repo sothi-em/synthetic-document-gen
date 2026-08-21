@@ -15,7 +15,8 @@ class DistressOptions(BaseModel):
     """Per-effect controls for the PNG distress pass.
 
     With ``enabled=False`` the pipeline skips the pass entirely and the
-    PNG is left as a perfect render. ``seed`` pins all randomness; when
+    PNG is left as a perfect render. ``seed`` pins the noise and warp
+    stages (stain positions are intentionally random on every run); when
     ``None`` the pipeline falls back to the company seed.
     """
 
@@ -55,7 +56,10 @@ class DistressOptions(BaseModel):
         description="Warp displacement magnitude (0 = none).", default=0.5
     )
     seed: int | None = Field(
-        description="Random seed for reproducibility; None = company seed.",
+        description=(
+            "Random seed for the noise and warp stages (stain positions "
+            "are intentionally unseeded); None = company seed."
+        ),
         default=None,
     )
 

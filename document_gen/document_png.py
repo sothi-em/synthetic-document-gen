@@ -24,8 +24,9 @@ Stages (see :func:`generate_document_image`):
 5. :func:`document_gen.generators.png_gen.html_to_png` renders the HTML
    to a single PNG (page 1 of the render).
 6. When enabled, :func:`document_gen.generators.png_gen.distress_image`
-   post-processes the PNG in-place into a scanned/aged look (seeded, so
-   the trace alone reproduces the exact PNG).
+   post-processes the PNG in-place into a scanned/aged look (noise and
+   warp are seeded from the trace; stain positions are intentionally
+   random on every run).
 
 The pipeline aggregates a per-stage **trace** (prompts, outputs,
 timings) stored on the document record under the ``gen_tracing`` field
@@ -466,8 +467,9 @@ def generate_document_image(
         "elapsed_s": round(png_render_elapsed, 3),
     }
 
-    # Stage 5: optional distress pass (scanned/aged look), in-place and
-    # seeded so the trace alone reproduces the exact PNG.
+    # Stage 5: optional distress pass (scanned/aged look), in-place.
+    # Noise and warp are seeded from the trace; stain positions are
+    # intentionally unseeded (vary per run).
     distress_seed = distress_options.seed if distress_options.seed is not None else seed
     if distress_options.enabled:
         t_step = time.perf_counter()
