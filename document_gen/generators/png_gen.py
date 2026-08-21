@@ -7,6 +7,9 @@
   looks like a scanned, aged document (paper tint, vignette, stains,
   scanner noise, faded ink, optional warp and blur), driven by
   :class:`document_gen.models.distress.DistressOptions`.
+- :func:`distress_image_to_bytes` applies the same pass to PNG bytes in
+  memory (no file I/O); :func:`distress_array` is the shared array-level
+  core both entry points run.
 
 Heavy dependencies (cv2, numpy, weasyprint, pypdfium2) are imported
 lazily inside functions to keep package import cheap.
@@ -33,49 +36,61 @@ _STAIN_FACTORS = (0.75, 0.82, 0.88)
 _RENDER_SCALE = 96 / 72
 
 
-def distress_image(path: Path, options: DistressOptions, seed: int) -> None:
-    """Apply the distress (scanned/aged look) pass in-place to a PNG.
+def _normalize_bgr(arr):
+    """Normalize a decoded image array to 3-channel BGR.
 
-    Stage pipeline (each stage gated by its flag, in this order):
-    paper tint -> vignette -> stains -> noise -> ink re-stamp (soft-alpha
-    blend) -> warp -> blur. The PNG at *path* is overwritten.
-
-    Stain positions and radii are drawn from a non-seeded OS-entropy RNG
-    and intentionally vary on every run. The noise and warp stages are
-    driven by *seed*, so with stains disabled the same (image, options,
-    seed) triple always produces the same output.
-
-    Args:
-        path: Path to the source PNG; overwritten with the distressed image.
-        options: Per-effect controls. When ``options.enabled`` is ``False``
-            the pass is skipped entirely and the file is left untouched
-            (perfect image).
-        seed: Random seed for the noise and warp stages (stain positions
-            are intentionally unseeded).
-
-    Raises:
-        FileNotFoundError: If *path* does not exist (and the pass is enabled).
-        ValueError: If the file at *path* cannot be decoded as an image.
+    Grayscale images are converted to BGR; RGBA images are composited
+    over white so transparent areas don't go black. Already-BGR arrays
+    are returned unchanged.
     """
-    if not options.enabled:
-        return
-
     import cv2
     import numpy as np
 
-    if not path.is_file():
-        raise FileNotFoundError(path)
-    clean = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-    if clean is None:
-        raise ValueError(f"Could not decode image: {path}")
-    if clean.ndim == 2:
-        clean = cv2.cvtColor(clean, cv2.COLOR_GRAY2BGR)
-    elif clean.shape[2] == 4:
-        # Composite RGBA over white so transparent areas don't go black.
-        alpha = clean[:, :, 3:4].astype(np.float32) / 255.0
-        clean = (
-            clean[:, :, :3].astype(np.float32) * alpha + 255.0 * (1 - alpha)
-        ).astype(np.uint8)
+    if arr.ndim == 2:
+        return cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+    if arr.shape[2] == 4:
+        alpha = arr[:, :, 3:4].astype(np.float32) / 255.0
+        return (arr[:, :, :3].astype(np.float32) * alpha + 255.0 * (1 - alpha)).astype(
+            np.uint8
+        )
+    return arr
+
+
+def distress_array(
+    clean: np.ndarray,
+    options: DistressOptions,
+    seed: int,
+    stain_seed: int | None = None,
+) -> np.ndarray:
+    """Run the distress (scanned/aged look) stages on an in-memory array.
+
+    Stage pipeline (each stage gated by its flag, in this order):
+    paper tint -> vignette -> stains -> noise -> ink re-stamp (soft-alpha
+    blend) -> warp -> blur.
+
+    The noise and warp stages are driven by *seed*. Stain positions and
+    radii are drawn from a non-seeded OS-entropy RNG and intentionally
+    vary on every run, unless *stain_seed* is given, in which case a
+    seeded RNG is used and the same (image, options, seed, stain_seed)
+    tuple always produces the same output.
+
+    Args:
+        clean: Normalized 3-channel BGR source image (uint8).
+        options: Per-effect controls. When ``options.enabled`` is
+            ``False`` the input is returned unchanged (perfect image).
+        seed: Random seed for the noise and warp stages.
+        stain_seed: Optional seed for the stain stage. ``None`` keeps
+            the unseeded OS-entropy behavior.
+
+    Returns:
+        The distressed image as a new uint8 BGR array (the input is
+        never mutated).
+    """
+    import cv2
+    import numpy as np
+
+    if not options.enabled:
+        return clean
 
     h, w = clean.shape[:2]
 
@@ -96,10 +111,14 @@ def distress_image(path: Path, options: DistressOptions, seed: int) -> None:
         paper = (paper.astype(np.float32) * factor[:, :, None]).astype(np.uint8)
 
     # 3. Stains: low-frequency coffee/dirt blobs with differential
-    #    darkening. Centers/radii use OS entropy so every run places the
-    #    stains differently (deliberately not reproducible).
+    #    darkening. Centers/radii default to OS entropy (every run places
+    #    the stains differently); a *stain_seed* makes them reproducible.
     if options.stains and options.stain_count > 0:
-        stain_rng = random.SystemRandom()
+        stain_rng = (
+            random.Random(stain_seed)
+            if stain_seed is not None
+            else random.SystemRandom()
+        )
         mask = np.zeros((h, w), dtype=np.uint8)
         for _ in range(options.stain_count):
             cx = stain_rng.randint(0, w - 1)
@@ -155,7 +174,89 @@ def distress_image(path: Path, options: DistressOptions, seed: int) -> None:
     if options.blur:
         out = cv2.GaussianBlur(out, (3, 3), 0)
 
+    return out
+
+
+def distress_image(path: Path, options: DistressOptions, seed: int) -> None:
+    """Apply the distress (scanned/aged look) pass in-place to a PNG.
+
+    Stage pipeline (each stage gated by its flag, in this order):
+    paper tint -> vignette -> stains -> noise -> ink re-stamp (soft-alpha
+    blend) -> warp -> blur. The PNG at *path* is overwritten.
+
+    Stain positions and radii are drawn from a non-seeded OS-entropy RNG
+    and intentionally vary on every run. The noise and warp stages are
+    driven by *seed*, so with stains disabled the same (image, options,
+    seed) triple always produces the same output.
+
+    Args:
+        path: Path to the source PNG; overwritten with the distressed image.
+        options: Per-effect controls. When ``options.enabled`` is ``False``
+            the pass is skipped entirely and the file is left untouched
+            (perfect image).
+        seed: Random seed for the noise and warp stages (stain positions
+            are intentionally unseeded).
+
+    Raises:
+        FileNotFoundError: If *path* does not exist (and the pass is enabled).
+        ValueError: If the file at *path* cannot be decoded as an image.
+    """
+    if not options.enabled:
+        return
+
+    import cv2
+
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    clean = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if clean is None:
+        raise ValueError(f"Could not decode image: {path}")
+    clean = _normalize_bgr(clean)
+    out = distress_array(clean, options, seed, stain_seed=None)
     cv2.imwrite(str(path), out)
+
+
+def distress_image_to_bytes(
+    data: bytes,
+    options: DistressOptions,
+    seed: int,
+    stain_seed: int | None = None,
+) -> bytes:
+    """Apply the distress pass to PNG bytes and return the result as bytes.
+
+    Same stage pipeline as :func:`distress_image`, but entirely in
+    memory: the input PNG bytes are decoded, distressed via
+    :func:`distress_array`, and re-encoded to PNG.
+
+    Args:
+        data: PNG-encoded source image bytes.
+        options: Per-effect controls. When ``options.enabled`` is
+            ``False`` the input is returned unchanged (perfect image).
+        seed: Random seed for the noise and warp stages.
+        stain_seed: Optional seed for the stain stage. ``None`` keeps
+            the unseeded OS-entropy behavior.
+
+    Returns:
+        PNG-encoded bytes of the distressed image.
+
+    Raises:
+        ValueError: If *data* cannot be decoded as an image.
+    """
+    if not options.enabled:
+        return data
+
+    import cv2
+    import numpy as np
+
+    clean = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)
+    if clean is None:
+        raise ValueError("Could not decode image from bytes")
+    clean = _normalize_bgr(clean)
+    out = distress_array(clean, options, seed, stain_seed=stain_seed)
+    ok, encoded = cv2.imencode(".png", out)
+    if not ok:
+        raise ValueError("Could not encode distressed image to PNG")
+    return encoded.tobytes()
 
 
 #: Page width for content-sized (non-A4) image documents (A4 width).

@@ -26,7 +26,10 @@ Stages (see :func:`generate_document_image`):
 6. When enabled, :func:`document_gen.generators.png_gen.distress_image`
    post-processes the PNG in-place into a scanned/aged look (noise and
    warp are seeded from the trace; stain positions are intentionally
-   random on every run).
+   random on every run). With tracing on, the untouched render is
+   preserved first as ``<stem>_original.png`` next to the document and
+   referenced from the trace
+   (``stages.distress.original_path``).
 
 The pipeline aggregates a per-stage **trace** (prompts, outputs,
 timings) stored on the document record under the ``gen_tracing`` field
@@ -38,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -177,6 +181,27 @@ def sanitize_image_html(html: str, a4: bool = True) -> str:
     return _apply_page_rule(doc, page_rule)
 
 
+def save_original_png(path: Path) -> Path:
+    """Preserve an untouched copy of a rendered PNG alongside itself.
+
+    Copies *path* to ``<stem>_original.png`` in the same directory (e.g.
+    ``foo.png`` -> ``foo_original.png``), using
+    :func:`document_pdf._unique_path` for collision safety (a numeric
+    suffix is added when the target already exists). The copy is trace
+    support data, not a document: it is never registered in TinyDB and
+    is referenced only via ``gen_tracing``.
+
+    Args:
+        path: The rendered PNG to preserve.
+
+    Returns:
+        The path of the preserved copy.
+    """
+    target = _unique_path(path.parent, f"{path.stem}_original", "png")
+    shutil.copyfile(path, target)
+    return target
+
+
 def force_page_size(html: str, width: str, height: str) -> str:
     """Force an explicit ``@page`` size on a sanitized HTML document.
 
@@ -254,9 +279,13 @@ def generate_document_image(
             otherwise the company seed.
         gen_tracing: When ``True``, the aggregated per-stage trace
             (prompts, outputs, timings) is persisted on the
-            document record under the ``gen_tracing`` field.
-            The trace is always built and returned on the artifact;
-            this flag only controls database persistence.
+            document record under the ``gen_tracing`` field. When the
+            distress pass runs under tracing, the untouched render is
+            also preserved as ``<stem>_original.png`` next to the
+            document and referenced from the trace
+            (``stages.distress.original_path``). The trace is always
+            built and returned on the artifact; this flag only
+            controls database persistence.
 
     Returns:
         The generated :class:`ImageArtifact` (markdown, HTML, PNG path,
@@ -469,9 +498,21 @@ def generate_document_image(
 
     # Stage 5: optional distress pass (scanned/aged look), in-place.
     # Noise and warp are seeded from the trace; stain positions are
-    # intentionally unseeded (vary per run).
+    # intentionally unseeded (vary per run). When tracing is on and the
+    # pass runs, the untouched render is preserved first as
+    # ``<stem>_original.png`` next to the document and referenced from
+    # the trace (``stages.distress.original_path``).
     distress_seed = distress_options.seed if distress_options.seed is not None else seed
+    trace["stages"]["distress"] = {
+        "enabled": distress_options.enabled,
+        "options": distress_options.model_dump(mode="json"),
+        "seed": distress_seed if distress_options.enabled else None,
+    }
     if distress_options.enabled:
+        if gen_tracing:
+            original = save_original_png(path)
+            logger.info("Image document: preserved original render -> %s", original)
+            trace["stages"]["distress"]["original_path"] = str(original)
         t_step = time.perf_counter()
         logger.info("Image document: distress pass started (seed=%d)", distress_seed)
         distress_image(path, distress_options, distress_seed)
@@ -483,12 +524,7 @@ def generate_document_image(
         )
     else:
         distress_elapsed = 0.0
-    trace["stages"]["distress"] = {
-        "enabled": distress_options.enabled,
-        "options": distress_options.model_dump(mode="json"),
-        "seed": distress_seed if distress_options.enabled else None,
-        "elapsed_s": round(distress_elapsed, 3),
-    }
+    trace["stages"]["distress"]["elapsed_s"] = round(distress_elapsed, 3)
 
     trace["finished_at"] = datetime.now(UTC).isoformat()
     trace["total_elapsed_s"] = round(time.perf_counter() - t_total, 3)

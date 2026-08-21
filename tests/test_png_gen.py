@@ -14,7 +14,12 @@ import numpy as np
 import pytest
 
 from document_gen.document_png import force_page_size, sanitize_image_html
-from document_gen.generators.png_gen import distress_image, html_to_png
+from document_gen.generators.png_gen import (
+    distress_array,
+    distress_image,
+    distress_image_to_bytes,
+    html_to_png,
+)
 from document_gen.models.distress import DistressOptions
 
 # ---------------------------------------------------------------------------
@@ -58,6 +63,16 @@ def _read(path: Path) -> np.ndarray:
 def _background(img: np.ndarray) -> np.ndarray:
     """Pixels away from the text/lines (top-right corner region)."""
     return img[150:350, 150:290]
+
+
+def _clean_bytes() -> bytes:
+    """PNG-encoded bytes of the clean synthetic document."""
+    return cv2.imencode(".png", _clean_image())[1].tobytes()
+
+
+def _stain_only_options() -> DistressOptions:
+    """Stains on, every other effect off (clean determinism signal)."""
+    return _options(stains=True, stain_count=10, noise=False, vignette=False)
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +221,75 @@ class TestDistressImage:
         distress_image(p1, opts, seed=7)
         distress_image(p2, opts, seed=7)
         assert p1.read_bytes() != p2.read_bytes()
+
+
+# ---------------------------------------------------------------------------
+# distress_array / distress_image_to_bytes (seedable stains, byte API)
+# ---------------------------------------------------------------------------
+
+
+class TestStainSeed:
+    def test_stain_seed_deterministic(self) -> None:
+        data = _clean_bytes()
+        opts = _stain_only_options()
+        out1 = distress_image_to_bytes(data, opts, seed=7, stain_seed=123)
+        out2 = distress_image_to_bytes(data, opts, seed=7, stain_seed=123)
+        assert out1 == out2
+
+    def test_different_stain_seed_changes_output(self) -> None:
+        data = _clean_bytes()
+        opts = _stain_only_options()
+        out1 = distress_image_to_bytes(data, opts, seed=7, stain_seed=123)
+        out2 = distress_image_to_bytes(data, opts, seed=7, stain_seed=456)
+        assert out1 != out2
+
+    def test_unseeded_stains_still_vary(self) -> None:
+        # stain_seed=None keeps the SystemRandom path: two runs with the
+        # same (image, options, seed) must still differ.
+        data = _clean_bytes()
+        opts = _stain_only_options()
+        out1 = distress_image_to_bytes(data, opts, seed=7)
+        out2 = distress_image_to_bytes(data, opts, seed=7)
+        assert out1 != out2
+
+    def test_distress_array_stain_seed_deterministic(self) -> None:
+        clean = _clean_image()
+        opts = _stain_only_options()
+        out1 = distress_array(clean, opts, seed=7, stain_seed=9)
+        out2 = distress_array(clean, opts, seed=7, stain_seed=9)
+        assert np.array_equal(out1, out2)
+        # The input array is never mutated.
+        assert np.array_equal(clean, _clean_image())
+
+
+class TestDistressImageToBytes:
+    def test_matches_in_place_for_same_inputs(self, tmp_path: Path) -> None:
+        # Stains off, so the stain seed is irrelevant: the byte API and
+        # the in-place API must produce byte-identical PNGs.
+        path = tmp_path / "img.png"
+        data = _clean_bytes()
+        assert cv2.imwrite(str(path), _clean_image())
+        opts = _options(stains=False)
+        distressed_bytes = distress_image_to_bytes(data, opts, seed=7, stain_seed=1)
+        distress_image(path, opts, seed=7)
+        assert distressed_bytes == path.read_bytes()
+
+    def test_disabled_returns_input_unchanged(self) -> None:
+        data = _clean_bytes()
+        out = distress_image_to_bytes(data, DistressOptions(), seed=1)
+        assert out is data
+
+    def test_undecodable_input_raises(self) -> None:
+        with pytest.raises(ValueError, match="decode"):
+            distress_image_to_bytes(b"not a png", _options(), seed=1)
+
+    def test_rgba_bytes_composited_over_white(self) -> None:
+        rgba = np.zeros((100, 100, 4), dtype=np.uint8)
+        rgba[:, :, :3] = 255  # opaque white
+        data = cv2.imencode(".png", rgba)[1].tobytes()
+        out = distress_image_to_bytes(data, _options(), seed=1)
+        arr = cv2.imdecode(np.frombuffer(out, np.uint8), cv2.IMREAD_UNCHANGED)
+        assert arr is not None and arr.shape == (100, 100, 3)
 
 
 # ---------------------------------------------------------------------------

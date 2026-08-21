@@ -245,6 +245,34 @@ def test_trace_persistence_flag(
 
 
 # ---------------------------------------------------------------------------
+# save_original_png
+# ---------------------------------------------------------------------------
+
+
+class TestSaveOriginalPng:
+    def test_copy_is_byte_identical(self, tmp_path: Path) -> None:
+        src = tmp_path / "foo.png"
+        src.write_bytes(b"fake-png-bytes")
+        original = document_png.save_original_png(src)
+        assert original == tmp_path / "foo_original.png"
+        assert original.read_bytes() == src.read_bytes()
+
+    def test_source_is_left_untouched(self, tmp_path: Path) -> None:
+        src = tmp_path / "foo.png"
+        src.write_bytes(b"fake-png-bytes")
+        document_png.save_original_png(src)
+        assert src.read_bytes() == b"fake-png-bytes"
+
+    def test_collision_gets_numeric_suffix(self, tmp_path: Path) -> None:
+        src = tmp_path / "foo.png"
+        src.write_bytes(b"fake-png-bytes")
+        (tmp_path / "foo_original.png").write_bytes(b"existing")
+        original = document_png.save_original_png(src)
+        assert original.name == "foo_original_1.png"
+        assert original.read_bytes() == src.read_bytes()
+
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
@@ -344,6 +372,53 @@ class TestGenerateDocumentImage:
             mode="json"
         )
         assert stage["elapsed_s"] >= 0
+
+    def test_traced_distress_preserves_original(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = FakeBackend()
+        artifact = _run(
+            tmp_path,
+            monkeypatch,
+            backend,
+            distress=DistressOptions(enabled=True, seed=7),
+            gen_tracing=True,
+        )
+        stage = artifact.gen_tracing["stages"]["distress"]
+        original = Path(stage["original_path"])
+        # The preserved original sits next to the document…
+        assert original.parent == artifact.png_path.parent
+        assert original.name == f"{artifact.png_path.stem}_original.png"
+        assert original.is_file()
+        # …is byte-identical to the untouched render (not the distressed
+        # file), and the record carries the trace.
+        assert original.read_bytes() != artifact.png_path.read_bytes()
+        records = document_query.list_documents(company_id=artifact.company_id)
+        assert records[0]["gen_tracing"]["stages"]["distress"]["original_path"] == (
+            str(original)
+        )
+
+    def test_untraced_distress_saves_no_original(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = FakeBackend()
+        artifact = _run(
+            tmp_path,
+            monkeypatch,
+            backend,
+            distress=DistressOptions(enabled=True, seed=7),
+        )
+        stage = artifact.gen_tracing["stages"]["distress"]
+        assert "original_path" not in stage
+        assert not list(tmp_path.glob("*_original.png"))
+
+    def test_traced_clean_render_saves_no_original(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = FakeBackend()
+        artifact = _run(tmp_path, monkeypatch, backend, gen_tracing=True)
+        assert "original_path" not in artifact.gen_tracing["stages"]["distress"]
+        assert not list(tmp_path.glob("*_original.png"))
 
     def test_distress_seed_falls_back_to_company_seed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
