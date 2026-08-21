@@ -20,3 +20,4 @@ htmlcov/
 # IDE
 /.idea
 /.claude
+/augraphy_cache
