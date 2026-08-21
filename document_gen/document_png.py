@@ -275,13 +275,16 @@ def generate_document_image(
             content (width stays A4 width).
         distress: Optional per-effect controls for the distress
             (scanned/aged look) pass. When ``None`` or
-            ``distress.enabled`` is ``False``, the PNG is left as a
-            perfect render. The pass seed is ``distress.seed`` when set,
-            otherwise the company seed.
+            ``distress.enabled`` is ``False`` (and tracing is off),
+            the PNG is left as a perfect render. The pass seed is
+            ``distress.seed`` when set, otherwise the company seed.
         gen_tracing: When ``True``, the aggregated per-stage trace
             (prompts, outputs, timings) is persisted on the
-            document record under the ``gen_tracing`` field. Under
-            tracing, the untouched render is also preserved as
+            document record under the ``gen_tracing`` field. Traced
+            images are always distressed (default effects when no
+            explicit distress options are enabled) and the pass always
+            starts from the fresh clean render. Under tracing, the
+            untouched render is also preserved as
             ``<stem>_original.png`` next to the document and referenced
             from the trace (``stages.distress.original_path``) —
             regardless of whether the distress pass runs — so the image
@@ -324,6 +327,11 @@ def generate_document_image(
     seed = doc.get("seed", 0)
     backend = get_chat_backend()
     distress_options = distress if distress is not None else DistressOptions()
+    # Traced images are always distressed (default effects) so the live
+    # editor has a rendered look to start from; the pass always runs on
+    # the fresh clean render (the original is preserved separately).
+    if gen_tracing and not distress_options.enabled:
+        distress_options = DistressOptions(enabled=True)
     # Image documents always use the full token caps and keep model
     # thinking on (there is no quick-doc variant).
     thinking = True

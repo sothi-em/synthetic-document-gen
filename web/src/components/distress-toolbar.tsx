@@ -94,9 +94,9 @@ const DEFAULT_OPTIONS: DistressOptions = {
 
 /**
  * Starting state for traced images generated without distress: no
- * effect flag is set and every value is 0, so turning the Distress
- * toggle on starts from a clean render. Options that were not applied
- * at generation are never preset.
+ * effect flag is set and every value is 0, so the render starts from
+ * a clean look. Options that were not applied at generation are never
+ * preset.
  */
 const CLEAN_OPTIONS: DistressOptions = {
   ...DEFAULT_OPTIONS,
@@ -291,7 +291,7 @@ function initialOptions(doc: DocumentRecord): DistressOptions {
   const trace = distressTrace(doc)
   if (trace === null) return DEFAULT_OPTIONS
   const enabled = typeof trace.enabled === "boolean" ? trace.enabled : false
-  if (!enabled) return CLEAN_OPTIONS
+  if (!enabled) return { ...CLEAN_OPTIONS, enabled: true }
   const raw = trace.options
   if (typeof raw !== "object" || raw === null) {
     return { ...CLEAN_OPTIONS, enabled: true }
@@ -323,15 +323,16 @@ interface DistressToolbarProps {
 
 /**
  * Live distress editor for a PNG document. Every control change
- * re-renders the stored original server-side (debounced) and pushes the
- * result to the preview. Save persists the current render over the
- * document file. Fully disabled when the document has no stored
- * pre-distress original (no trace, or distress was off at generation).
+ * re-renders the stored pre-distress original server-side (debounced)
+ * and pushes the result to the preview — the pass always starts from
+ * the fresh clean render, never from a previously distressed image.
+ * Save persists the current render over the document file. Fully
+ * disabled when the document has no stored pre-distress original
+ * (no trace).
  *
  * Effects are grouped into three collapsible sections (Ink / Paper /
  * Post) mirroring the augraphy pipeline phases; legacy effects fold
- * into their phase. Sections auto-collapse when all their toggles are
- * off. The backend select switches between the augraphy pipeline
+ * into their phase. The backend select switches between the augraphy pipeline
  * (default) and the preserved legacy stages; augraphy-only effects are
  * no-ops on the legacy backend and render disabled there.
  */
@@ -365,24 +366,6 @@ export function DistressToolbar({
   useEffect(() => {
     onBusyChange?.(busy)
   }, [busy, onBusyChange])
-
-  // Auto-collapse a section when its last effect toggle is switched off.
-  useEffect(() => {
-    setOpenSections((cur) => {
-      let changed = false
-      const next = { ...cur }
-      for (const section of SECTIONS) {
-        if (
-          next[section.key] &&
-          activeCount(section.effects, options) === 0
-        ) {
-          next[section.key] = false
-          changed = true
-        }
-      }
-      return changed ? next : cur
-    })
-  }, [options])
 
   // Live preview loop: debounce ~300 ms per control change, then ask the
   // server to re-distress the stored original with the current options.
@@ -454,32 +437,18 @@ export function DistressToolbar({
         </p>
       )}
       <div className="flex flex-col gap-2">
-        <label className="flex items-center justify-between gap-2 text-sm">
-          <span className={editable ? "" : "text-muted-foreground"}>
-            Distress
-          </span>
-          <Switch
-            checked={options.enabled}
-            disabled={!editable}
-            onCheckedChange={(checked) =>
-              setOptions((o) => ({ ...o, enabled: checked }))
-            }
-          />
-        </label>
         <div className="flex flex-col gap-1">
           <span
             className={
               "text-xs " +
-              (editable && options.enabled
-                ? "text-foreground"
-                : "text-muted-foreground")
+              (editable ? "text-foreground" : "text-muted-foreground")
             }
           >
             Backend
           </span>
           <Select
             value={options.backend}
-            disabled={!editable || !options.enabled}
+            disabled={!editable}
             onValueChange={(value) =>
               setOptions((o) => ({
                 ...o,
@@ -495,7 +464,7 @@ export function DistressToolbar({
               <SelectItem value="legacy">Legacy</SelectItem>
             </SelectContent>
           </Select>
-          {legacy && options.enabled && (
+          {legacy && (
             <p className="text-xs text-muted-foreground">
               Legacy backend: augraphy-only effects are disabled
               (no-ops).
@@ -536,9 +505,7 @@ export function DistressToolbar({
                 <div className="flex flex-col gap-2 pl-4">
                   {section.effects.map(({ key, label, augraphyOnly }) => {
                     const disabled =
-                      !editable ||
-                      !options.enabled ||
-                      (augraphyOnly !== undefined && legacy)
+                      !editable || (augraphyOnly !== undefined && legacy)
                     return (
                       <label
                         key={key}
@@ -567,9 +534,7 @@ export function DistressToolbar({
                         <span
                           className={
                             "text-xs " +
-                            (editable &&
-                            options.enabled &&
-                            !off(options)
+                            (editable && !off(options)
                               ? "text-foreground"
                               : "text-muted-foreground")
                           }
@@ -581,7 +546,7 @@ export function DistressToolbar({
                           min={min}
                           max={max}
                           step={step}
-                          disabled={!editable || !options.enabled || off(options)}
+                          disabled={!editable || off(options)}
                           onValueChange={(v) =>
                             setOptions((o) => ({ ...o, [key]: v[0] }))
                           }
@@ -600,7 +565,7 @@ export function DistressToolbar({
                           value={options.watermark_word}
                           maxLength={40}
                           placeholder="random"
-                          disabled={!editable || !options.enabled}
+                          disabled={!editable}
                           onChange={(e) =>
                             setOptions((o) => ({
                               ...o,

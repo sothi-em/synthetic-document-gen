@@ -10,7 +10,6 @@ import {
 import {
   api,
   type CompanySummary,
-  type DistressOptions,
   type FigureKind,
   type ImageJobResult,
   type DocumentTypeDoc,
@@ -43,23 +42,6 @@ const FIGURE_KIND_OPTIONS: { kind: FigureKind; label: string }[] = [
   { kind: "histogram", label: "Histogram" },
 ]
 
-/** Default per-effect distress settings (mirrors DistressOptions). */
-const DEFAULT_DISTRESS = {
-  paperAging: true,
-  vignette: true,
-  vignetteStrength: 0.3,
-  stains: true,
-  stainCount: 4,
-  noise: true,
-  noiseStrength: 12,
-  inkFade: true,
-  blur: true,
-  warp: false,
-  warpStrength: 0.5,
-}
-
-type DistressFormState = typeof DEFAULT_DISTRESS
-
 interface GenerateImageDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -71,8 +53,9 @@ interface GenerateImageDialogProps {
 /**
  * Generate a single-page PNG image document for one document type:
  * optional free-text guidance + model override, A4 aspect ratio lock,
- * optional distress (scanned/aged look) pass, background job with live
- * progress, and a download link when done.
+ * background job with live progress, and a download link when done.
+ * Traced images are distressed server-side (default effects) and can
+ * be re-distressed from the clean original in the preview editor.
  */
 export function GenerateImageDialog({
   open,
@@ -85,8 +68,6 @@ export function GenerateImageDialog({
   const [model, setModel] = useState("")
   const [genTrace, setGenTrace] = useState(false)
   const [a4Aspect, setA4Aspect] = useState(true)
-  const [distressOn, setDistressOn] = useState(false)
-  const [distress, setDistress] = useState<DistressFormState>(DEFAULT_DISTRESS)
   const [figureKinds, setFigureKinds] = useState<Record<FigureKind, boolean>>(
     () => Object.fromEntries(
       FIGURE_KIND_OPTIONS.map(({ kind }) => [kind, false])
@@ -102,8 +83,6 @@ export function GenerateImageDialog({
       setModel("")
       setGenTrace(false)
       setA4Aspect(true)
-      setDistressOn(false)
-      setDistress(DEFAULT_DISTRESS)
       setFigureKinds(
         Object.fromEntries(
           FIGURE_KIND_OPTIONS.map(({ kind }) => [kind, false])
@@ -123,82 +102,6 @@ export function GenerateImageDialog({
     onOpenChange(next)
   }
 
-  function setDistressField<K extends keyof DistressFormState>(
-    field: K,
-    value: DistressFormState[K],
-  ) {
-    setDistress((prev) => ({ ...prev, [field]: value }))
-  }
-
-  /** Parse a numeric input, falling back to the default when invalid. */
-  function parseNumeric(value: string, fallback: number): number {
-    const parsed = Number(value)
-    return Number.isFinite(parsed) ? parsed : fallback
-  }
-
-  function buildDistress(): DistressOptions {
-    // The dialog only exposes the master switch + the legacy sliders;
-    // the augraphy-only effects stay at their defaults (off) and are
-    // configured in the live editor after generation.
-    return {
-      enabled: distressOn,
-      backend: "augraphy",
-      paper_aging: distress.paperAging,
-      vignette: distress.vignette,
-      vignette_strength: distress.vignetteStrength,
-      stains: distress.stains,
-      stain_count: distress.stainCount,
-      noise: distress.noise,
-      noise_strength: distress.noiseStrength,
-      ink_fade: distress.inkFade,
-      blur: distress.blur,
-      warp: distress.warp,
-      warp_strength: distress.warpStrength,
-      seed: null,
-      ink_bleed: false,
-      bleed_through: false,
-      letterpress: false,
-      ink_mottling: false,
-      ink_color_swap: false,
-      hollow: false,
-      dithering: false,
-      dot_matrix: false,
-      low_ink_periodic_lines: false,
-      low_ink_random_lines: false,
-      lines_degradation: false,
-      noise_texturize: false,
-      brightness_texturize: false,
-      watermark: false,
-      watermark_word: "CONFIDENTIAL",
-      pattern_generator: false,
-      voronoi_tessellation: false,
-      delaunay_tessellation: false,
-      paper_factory: false,
-      bad_photo_copy: false,
-      faxify: false,
-      dirty_drum: false,
-      dirty_rollers: false,
-      dirty_screen: false,
-      shadow_cast: false,
-      lens_flare: false,
-      reflected_light: false,
-      brightness: false,
-      gamma: false,
-      color_shift: false,
-      depth_blur: false,
-      moire: false,
-      lcd_pattern: false,
-      jpeg_artifacts: false,
-      jpeg_quality: 50,
-      double_exposure: false,
-      folding: false,
-      fold_count: 2,
-      bindings: false,
-      markup: false,
-      scribbles: false,
-    }
-  }
-
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
     if (state.running) return
@@ -211,7 +114,8 @@ export function GenerateImageDialog({
         figure_kinds: FIGURE_KIND_OPTIONS.filter(({ kind }) => figureKinds[kind])
           .map(({ kind }) => kind),
         a4_aspect: a4Aspect,
-        distress: buildDistress(),
+        // No distress option in the modal: traced images are distressed
+        // server-side (default effects) from the clean render.
         gen_tracing: genTrace,
       })
       start(job.id, 1, () => {})
@@ -321,135 +225,6 @@ export function GenerateImageDialog({
               </label>
             ))}
           </fieldset>
-          <label
-            className="flex items-center gap-2 text-sm text-muted-foreground"
-          >
-            <input
-              type="checkbox"
-              checked={distressOn}
-              disabled={state.running}
-              onChange={(e) => setDistressOn(e.target.checked)}
-            />
-            <span className="flex items-center gap-1">
-              Distress document
-              <span className="group relative inline-flex">
-                <HelpCircle className="size-3.5 cursor-help text-muted-foreground" />
-                <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 hidden w-64 -translate-x-1/2 rounded-md border bg-popover p-2 text-xs font-normal leading-snug text-popover-foreground shadow-md group-hover:block">
-                  Make it look like a scanned, aged document: paper tint,
-                  stains, noise, warp.
-                </span>
-              </span>
-            </span>
-          </label>
-          {distressOn && (
-            <div
-              className="flex flex-col gap-3 rounded-md border bg-secondary/30 p-3 pl-8"
-              aria-label="Distress effects"
-            >
-              <fieldset
-                disabled={state.running}
-                className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-muted-foreground"
-              >
-                <legend className="sr-only">Distress effects</legend>
-                {(
-                  [
-                    ["paperAging", "Paper aging"],
-                    ["vignette", "Vignette"],
-                    ["stains", "Stains"],
-                    ["noise", "Noise"],
-                    ["inkFade", "Ink fade"],
-                    ["blur", "Blur"],
-                    ["warp", "Warp"],
-                  ] as const
-                ).map(([field, label]) => (
-                  <label key={field} className="flex items-center gap-1.5">
-                    <input
-                      type="checkbox"
-                      checked={distress[field]}
-                      onChange={(e) => setDistressField(field, e.target.checked)}
-                    />
-                    {label}
-                  </label>
-                ))}
-              </fieldset>
-              <div
-                className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-muted-foreground"
-              >
-                <label className="flex items-center gap-1.5">
-                  Vignette strength
-                  <input
-                    type="number"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={distress.vignetteStrength}
-                    disabled={state.running || !distress.vignette}
-                    onChange={(e) =>
-                      setDistressField(
-                        "vignetteStrength",
-                        parseNumeric(e.target.value, DEFAULT_DISTRESS.vignetteStrength),
-                      )
-                    }
-                    className="w-16 rounded-md border border-input bg-transparent px-2 py-1 text-sm shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                </label>
-                <label className="flex items-center gap-1.5">
-                  Stain count
-                  <input
-                    type="number"
-                    min={0}
-                    max={20}
-                    step={1}
-                    value={distress.stainCount}
-                    disabled={state.running || !distress.stains}
-                    onChange={(e) =>
-                      setDistressField(
-                        "stainCount",
-                        Math.round(parseNumeric(e.target.value, DEFAULT_DISTRESS.stainCount)),
-                      )
-                    }
-                    className="w-16 rounded-md border border-input bg-transparent px-2 py-1 text-sm shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                </label>
-                <label className="flex items-center gap-1.5">
-                  Noise strength
-                  <input
-                    type="number"
-                    min={0}
-                    max={50}
-                    step={1}
-                    value={distress.noiseStrength}
-                    disabled={state.running || !distress.noise}
-                    onChange={(e) =>
-                      setDistressField(
-                        "noiseStrength",
-                        parseNumeric(e.target.value, DEFAULT_DISTRESS.noiseStrength),
-                      )
-                    }
-                    className="w-16 rounded-md border border-input bg-transparent px-2 py-1 text-sm shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                </label>
-                <label className="flex items-center gap-1.5">
-                  Warp strength
-                  <input
-                    type="number"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={distress.warpStrength}
-                    disabled={state.running || !distress.warp}
-                    onChange={(e) =>
-                      setDistressField(
-                        "warpStrength",
-                        parseNumeric(e.target.value, DEFAULT_DISTRESS.warpStrength),
-                      )
-                    }
-                    className="w-16 rounded-md border border-input bg-transparent px-2 py-1 text-sm shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                </label>
-              </div>
-            </div>
-          )}
           <JobStatus state={state} />
           {hasResult && state.result && (
             <a

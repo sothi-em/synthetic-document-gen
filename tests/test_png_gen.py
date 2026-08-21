@@ -612,6 +612,23 @@ class TestAugraphySmoke:
             f"{result.stderr[-2000:] or result.stdout[-2000:]}."
         )
 
+    def test_markup_highlighter_ink_no_float64_crash(self) -> None:
+        # augraphy bug (unfixed in 8.2.6): the highlighter ink path
+        # builds std_range from np.ceil (float64) and passes it to
+        # random.randint, raising "TypeError: 'numpy.float64' object
+        # cannot be interpreted as an integer". _patch_augraphy (run
+        # from _build_augraphy_pipeline) coerces the range to ints. The
+        # random-ink smoke test above does not always reach the
+        # highlighter, so exercise it directly.
+        import augraphy as ag
+
+        from document_gen.generators.png_gen import _patch_augraphy
+
+        _patch_augraphy()
+        clean = _clean_image()
+        out = ag.Markup(markup_ink="highlighter", markup_type="highlight", p=1.0)(clean)
+        assert out.shape == clean.shape and out.dtype == np.uint8
+
 
 # ---------------------------------------------------------------------------
 # sanitize_image_html
@@ -676,9 +693,9 @@ class TestHtmlToPng:
         assert result == path
         with Image.open(path) as img:
             w, h = img.size
-        # A4 at 96dpi: 794 x 1123 (allow raster rounding).
-        assert 790 <= w <= 798
-        assert 1118 <= h <= 1128
+        # A4 at 192dpi: 1587 x 2245 (allow raster rounding).
+        assert 1580 <= w <= 1592
+        assert 2238 <= h <= 2252
 
     def test_auto_render_is_content_sized(self, tmp_path: Path) -> None:
         from PIL import Image
@@ -702,8 +719,8 @@ class TestHtmlToPng:
         html_to_png(f"<html><body>{sections}</body></html>", path, a4=True)
         with Image.open(path) as img:
             w, h = img.size
-        assert 790 <= w <= 798
-        assert 1118 <= h <= 1128
+        assert 1580 <= w <= 1592
+        assert 2238 <= h <= 2252
 
     def test_multi_page_logs_warning(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -729,8 +746,8 @@ class TestHtmlToPng:
         with Image.open(path) as img:
             w, h = img.size
         # A4 portrait forced despite the LLM's letter landscape rule.
-        assert 790 <= w <= 798
-        assert 1118 <= h <= 1128
+        assert 1580 <= w <= 1592
+        assert 2238 <= h <= 2252
 
     def test_creates_parent_dirs(self, tmp_path: Path) -> None:
         path = tmp_path / "deep" / "nested" / "out.png"

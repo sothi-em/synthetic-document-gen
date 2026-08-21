@@ -40,7 +40,8 @@ _PAPER_BGR = (215, 235, 245)
 _STAIN_FACTORS = (0.75, 0.82, 0.88)
 
 #: Rasterization resolution for HTML -> PNG (points -> pixels).
-_RENDER_SCALE = 96 / 72
+#: 192 DPI (2x the 96 DPI screen baseline) for crisp text and figures.
+_RENDER_SCALE = 192 / 72
 
 
 def _normalize_bgr(arr):
@@ -67,6 +68,38 @@ def _normalize_bgr(arr):
 #: ``random_seed`` seeds the process-global ``random`` module, so
 #: concurrent calls would otherwise interleave and break determinism.
 _AUGRAPHY_LOCK = threading.Lock()
+
+#: One-time guard for :func:`_patch_augraphy`.
+_AUGRAPHY_PATCHED = False
+
+
+def _patch_augraphy() -> None:
+    """Apply one-time workarounds for augraphy bugs.
+
+    - ``InkGenerator.generate_noise_clusters``: the highlighter ink path
+      (``Markup`` with ``markup_ink="highlighter"``, reachable via the
+      default ``"random"`` selection) builds ``std_range`` from
+      ``np.ceil`` (float64) and passes it to ``random.randint``, which
+      raises ``TypeError: 'numpy.float64' object cannot be interpreted
+      as an integer``. Coerce the range to ints (still unpatched in
+      augraphy 8.2.6, the latest 8.x release).
+    """
+    global _AUGRAPHY_PATCHED
+    if _AUGRAPHY_PATCHED:
+        return
+    from augraphy.utilities.inkgenerator import InkGenerator
+
+    original = InkGenerator.generate_noise_clusters
+
+    def generate_noise_clusters(
+        self, image, n_clusters=(200, 200), n_samples=(300, 300), std_range=(5, 10)
+    ):
+        return original(
+            self, image, n_clusters, n_samples, (int(std_range[0]), int(std_range[1]))
+        )
+
+    InkGenerator.generate_noise_clusters = generate_noise_clusters
+    _AUGRAPHY_PATCHED = True
 
 
 def _build_augraphy_pipeline(
@@ -107,6 +140,8 @@ def _build_augraphy_pipeline(
         augmentation is enabled in any phase.
     """
     import augraphy as ag
+
+    _patch_augraphy()
 
     ink_phase = []
     if options.ink_bleed:
