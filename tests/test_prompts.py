@@ -18,6 +18,9 @@ from document_gen.prompts import (
     document_plan_prompt,
     document_html_prompt,
     document_html_system_prompt,
+    image_content_prompt,
+    image_html_prompt,
+    image_html_system_prompt,
     synthetic_company_prompt,
 )
 
@@ -232,3 +235,48 @@ class TestQuickPromptTemplates:
         assert len(quick_document_figures_prompt) < len(document_figures_prompt)
         assert len(quick_document_html_system_prompt) < len(document_html_system_prompt)
         assert len(quick_document_html_prompt) < len(document_html_prompt)
+
+
+class TestImagePromptTemplates:
+    """The single-page image prompt set: content + HTML (system + user)."""
+
+    def test_image_content_prompt(self) -> None:
+        _check_slots_once(
+            image_content_prompt,
+            {
+                "<company_profile>": "profile text",
+                "<document_type>": "Product Flyer",
+                "<user_input>": "focus on Q3",
+                "<figures>": "None. Do not include any figures.",
+            },
+        )
+        # Single-page contract: 3-5 short sections, one table, no TOC.
+        assert "3-5 short sections" in image_content_prompt
+        assert "at most one" in image_content_prompt.lower()
+        assert "no table of contents" in image_content_prompt.lower()
+        # No <toc> slot: image documents never carry a TOC.
+        assert "<toc>" not in image_content_prompt
+
+    def test_image_html_system_prompt(self) -> None:
+        _check_slots_once(image_html_system_prompt, {"<page_size>": "A4 portrait"})
+        # Everything on one page: no page furniture, compact type scale.
+        assert "one page" in image_html_system_prompt
+        assert "page numbers" in image_html_system_prompt
+        assert "page-break" in image_html_system_prompt
+        assert "Compact type scale" in image_html_system_prompt
+        # Figures arrive pre-rendered: the LLM only places placeholders.
+        assert "{{FIGURE_n}}" in image_html_system_prompt
+        assert "draw figures yourself" in image_html_system_prompt
+
+    def test_image_html_prompt(self) -> None:
+        _check_slots_once(
+            image_html_prompt,
+            {
+                "<company_profile>": "profile text",
+                "<design_brief>": "Modern minimal.",
+                "<markdown>": "# Doc",
+                "<figures>": "bar",
+            },
+        )
+        # The page size lives in the system prompt, not the user prompt.
+        assert "<page_size>" not in image_html_prompt

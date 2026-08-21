@@ -569,3 +569,120 @@ section, subsection, and table from the markdown exactly, and place each
 figure placeholder listed above verbatim near the table or section it
 illustrates.
 """
+
+# ---------------------------------------------------------------------------
+# Image prompt set: single-page image documents. Same pipeline shape as
+# the PDF set (plan -> markdown -> figures -> HTML+CSS) but everything
+# must fit on exactly one page: no TOC ever, at most one data table, at
+# most one figure, and no page furniture (headers, footers, page
+# numbers). The <page_size> slot is "A4 portrait" or "content-sized
+# (auto)".
+# ---------------------------------------------------------------------------
+
+image_content_prompt = """\
+You are a professional document writer for a fictional (synthetic)
+company, drafting the content of a **single-page image document**:
+the finished document must fit on exactly one printed page.
+
+Company profile
+<company_profile>
+
+Document to draft
+<document_type>
+
+Additional user instructions
+<user_input>
+
+Task
+Draft the full content of the requested document for this company, in
+**markdown**.
+
+Requirements
+1. Keep it concise: a title plus **3-5 short sections** (one or two
+   sentences each), no subsections and **no table of contents**.
+2. Include **at most one** sample data table (markdown). The sample
+   data must be:
+   - internally consistent (totals add up, percentages are coherent,
+     periods align),
+   - plausible for the company's industry, size, and description.
+3. Follow the additional user instructions when given; they take
+   priority over everything else in this prompt, including the
+   document type if the user requests a different kind of document.
+   Never substitute a different, more data-oriented document for what
+   was requested.
+4. All data is fictional; do not reference real companies or real data.
+
+Figures
+<figures>
+
+Formatting
+- Markdown only. Use `#` for the document title, `##` for sections.
+  No code fences around the document.
+- The document title (the single `#` heading on the first line) must be
+  a **concise document name**: 3-6 words that capture what this
+  specific document is (e.g. "Q3 Guest Departure Summary"), not the full
+  document type name and not a generic word like "Document".
+- Professional, concise tone.
+"""
+
+image_html_system_prompt = """\
+You are a document designer. You convert document markdown into a single
+standalone HTML document for a **single-page image document**: the whole
+document must fit on exactly **one page**, with no room to spare.
+
+Hard layout rules (always obey)
+1. Page size: <page_size>. The exact `@page` size is enforced after you
+   finish, but design for it: everything on one page — no page breaks,
+   no `page-break-*` rules, no running headers or footers,
+   no page numbers, no `@page` margin-box content (page counters, etc.).
+2. No fixed pixel widths that assume a screen or a different page ratio
+   (never `width: 900px` on body, main, tables, or page containers).
+   Use `100%`, `%`, `cm`, `mm`, `pt`, or `em` instead.
+3. Compact type scale: 9-10pt body, tight (but readable) margins and
+   paragraph spacing, small section headings, tables `width: 100%` with
+   compact rows. The content must not overflow the page.
+4. Styling: use the **design brief** given in the task (design
+   direction, color palette, typography, layout style) to give this
+   document a distinctive visual identity. A compact title block (title,
+   date, and optionally a reference number) is expected, and the company
+   name should appear somewhere (e.g. a small letterhead line). The
+   result must still look professional, cohesive, and print-friendly.
+5. Single standalone document: all CSS in one `<style>` block in the
+   `<head>`. No external assets, no JavaScript, no image files, no
+   inline SVG — any decoration must be drawn with CSS (borders, rules,
+   backgrounds). Figures (charts, graphs, plots) are the only exception:
+   they arrive pre-rendered. Place the given `{{FIGURE_n}}` placeholder
+   tokens verbatim in the document; they are replaced with embedded
+   chart images after you finish. Never draw figures yourself.
+
+Content rules
+- Preserve ALL content, headings, and tables from the given markdown.
+- Do not invent, add, or remove data.
+- Fenced ```chart / ```plot / ```graph blocks in the markdown are figure
+  declarations, not content: do not render them as code blocks. Instead
+  place the matching `{{FIGURE_n}}` placeholder (in the order listed in
+  the task) near the table or section the figure illustrates.
+- Output the complete HTML document only (from `<!DOCTYPE html>` to
+  `</html>`), with no commentary and no code fences.
+"""
+
+image_html_prompt = """\
+Company (for the letterhead)
+<company_profile>
+
+Design brief
+<design_brief>
+
+Document content (markdown)
+<markdown>
+
+Figures to include
+<figures>
+
+Convert the markdown above into a single standalone HTML document for
+this company, following the layout rules you were given (everything on
+one page, no page breaks or page furniture, compact type scale) and the
+design brief above (palette, typography, layout style). Preserve every
+section and table from the markdown exactly, and place each figure
+placeholder listed above verbatim near the table it illustrates.
+"""
