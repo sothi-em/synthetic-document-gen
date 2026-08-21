@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { Download, EyeOff, LoaderCircle } from "lucide-react"
 import { api, type DocumentRecord } from "@/lib/api"
 import { DistressToolbar } from "@/components/distress-toolbar"
+import { ImagePanZoom } from "@/components/image-pan-zoom"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -219,23 +220,22 @@ export function DocumentViewDialog({
                   onSaved={onDocumentSaved}
                 />
               </div>
-              <div className="relative flex min-w-0 flex-1 items-center justify-center overflow-auto p-4">
+              <ImagePanZoom
+                src={previewSrc}
+                alt={doc.filename}
+                resetKey={doc.id}
+                onError={() => {
+                  setError("Could not load this image")
+                  setStatus("error")
+                }}
+              >
                 {rendering && (
                   <span className="absolute left-3 top-3 z-10 flex items-center gap-1.5 rounded-full bg-background/90 px-2.5 py-1 text-xs shadow">
                     <LoaderCircle className="size-3.5 animate-spin" />
                     Rendering…
                   </span>
                 )}
-                <img
-                  src={previewSrc}
-                  alt={doc.filename}
-                  className="max-h-full max-w-full object-contain"
-                  onError={() => {
-                    setError("Could not load this image")
-                    setStatus("error")
-                  }}
-                />
-              </div>
+              </ImagePanZoom>
             </div>
           )}
           {status === "ready" && kind === "sheet" && (
