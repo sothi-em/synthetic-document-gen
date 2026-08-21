@@ -55,9 +55,13 @@ The user has requested the following kind of document(s):
 <document_request>
 
 Ground the list in the company profile and focus it on the requested
-document type(s). Every document should be data-rich: it should be
-something that naturally contains numbers, metrics, or tables of figures
-about the company's operations.
+document type(s). The user's request defines the kind of document; the
+user's instructions take priority over any default preference in this
+prompt. Never substitute a different, more data-oriented document for
+what was requested (e.g. do not turn a menu into a sales report). Where
+natural, prefer documents that can include numbers, metrics, or tables
+of figures about the company's operations, but only if that does not
+distort the requested document type.
 
 Input
 <user_input>
@@ -116,7 +120,10 @@ Requirements
      periods align),
    - plausible for the company's industry, size, and description.
 4. Follow the additional user instructions when given; they take
-   priority over your default section choices.
+   priority over everything else in this prompt, including the
+   document type if the user requests a different kind of document.
+   Never substitute a different, more data-oriented document for what
+   was requested.
 5. All data is fictional; do not reference real companies or real data.
 
 Figures
@@ -301,7 +308,11 @@ Write a short markdown document (1-3 sections, roughly one page):
 2. Cover the essentials of the document type in concise prose.
 3. Include at most one small sample data table (markdown) with
    internally consistent, plausible, fictional numbers.
-4. Follow the additional user instructions when given.
+4. Follow the additional user instructions when given; they take
+   priority over everything else in this prompt, including the
+   document type if the user requests a different kind of document.
+   Never substitute a different, more data-oriented document for what
+   was requested.
 
 No table of contents, no code fences around the document. All data is
 fictional.
