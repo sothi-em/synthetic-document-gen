@@ -1,6 +1,4 @@
-"""Tests for the FastAPI web server in ``document_gen.server``.
-
-"""
+"""Tests for the FastAPI web server in ``document_gen.server``."""
 
 from __future__ import annotations
 
