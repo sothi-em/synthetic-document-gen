@@ -23,7 +23,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Goal:** `document_gen/generators/png_gen.py` can distress PNG bytes in memory and place stains deterministically, with the existing in-place API unchanged.
 
-### Task 1.1 — Extract `distress_array`
+### Task 1.1 — Extract `distress_array` — [x]
 
 **Files:** `document_gen/generators/png_gen.py`
 
@@ -44,7 +44,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `uv run python -c "from document_gen.generators.png_gen import distress_array, distress_image"` succeeds; existing `tests/test_png_gen.py` still passes (run it now even though new tests come in 1.3).
 
-### Task 1.2 — Add `distress_image_to_bytes`
+### Task 1.2 — Add `distress_image_to_bytes` — [x]
 
 **Files:** `document_gen/generators/png_gen.py`
 
@@ -63,7 +63,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** import succeeds; manual smoke test: distress a synthetic 400×300 PNG bytes with default options and get back decodable PNG bytes of the same size.
 
-### Task 1.3 — Tests for Phase 1
+### Task 1.3 — Tests for Phase 1 — [x]
 
 **Files:** `tests/test_png_gen.py`
 
@@ -81,7 +81,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Goal:** traced + distressed image documents keep an untouched copy on disk, referenced from the trace.
 
-### Task 2.1 — `save_original_png` helper
+### Task 2.1 — `save_original_png` helper — [x]
 
 **Files:** `document_gen/document_png.py`, `tests/test_document_png.py` (new file)
 
@@ -94,7 +94,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `uv run pytest tests/test_document_png.py` passes.
 
-### Task 2.2 — Hook into the pipeline
+### Task 2.2 — Hook into the pipeline — [x]
 
 **Files:** `document_gen/document_png.py`
 
@@ -115,7 +115,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Goal:** HTTP surface for live preview and persistence; document record size stays accurate.
 
-### Task 3.1 — `document_query.update_document_size`
+### Task 3.1 — `document_query.update_document_size` — [ ]
 
 **Files:** `document_gen/document_query.py`, `tests/test_document_query.py`
 
@@ -126,7 +126,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `uv run pytest tests/test_document_query.py` passes.
 
-### Task 3.2 — Request model + original-path helper
+### Task 3.2 — Request model + original-path helper — [ ]
 
 **Files:** `document_gen/server.py`
 
@@ -145,7 +145,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `uv run pytest` passes (no behavior change yet).
 
-### Task 3.3 — Preview endpoint
+### Task 3.3 — Preview endpoint — [ ]
 
 **Files:** `document_gen/server.py`
 
@@ -156,7 +156,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** import check + `uv run pytest` passes.
 
-### Task 3.4 — Save endpoint
+### Task 3.4 — Save endpoint — [ ]
 
 **Files:** `document_gen/server.py`
 
@@ -167,7 +167,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `uv run pytest` passes.
 
-### Task 3.5 — Server tests
+### Task 3.5 — Server tests — [ ]
 
 **Files:** `tests/test_server.py`
 
@@ -183,7 +183,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Goal:** TypeScript surface for the new endpoints + trace helpers.
 
-### Task 4.1 — Types and helpers
+### Task 4.1 — Types and helpers — [ ]
 
 **Files:** `web/src/lib/api.ts`
 
@@ -193,7 +193,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `cd web && pnpm build` passes.
 
-### Task 4.2 — Endpoint methods
+### Task 4.2 — Endpoint methods — [ ]
 
 **Files:** `web/src/lib/api.ts`
 
@@ -208,7 +208,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Goal:** shadcn `Slider` and `Switch` available in `web/src/components/ui/`.
 
-### Task 5.1 — Install + add components
+### Task 5.1 — Install + add components — [ ]
 
 **Files:** `web/package.json`, `web/src/components/ui/slider.tsx` (new), `web/src/components/ui/switch.tsx` (new)
 
@@ -223,7 +223,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Goal:** the live editor UX, including the disabled state.
 
-### Task 6.1 — `DistressToolbar` component (controls + state)
+### Task 6.1 — `DistressToolbar` component (controls + state) — [ ]
 
 **Files:** `web/src/components/distress-toolbar.tsx` (new)
 
@@ -247,7 +247,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `pnpm build && pnpm lint` pass; component renders (not yet wired to the image).
 
-### Task 6.2 — Live preview loop
+### Task 6.2 — Live preview loop — [ ]
 
 **Files:** `web/src/components/distress-toolbar.tsx`, `web/src/components/document-view-dialog.tsx`
 
@@ -261,7 +261,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** `pnpm build && pnpm lint` pass; manual: traced+distressed image → sliders/toggles re-render the image live with a rendering indicator; blob URLs are revoked (check DevTools for no unbounded object-URL growth).
 
-### Task 6.3 — Save button + list refresh
+### Task 6.3 — Save button + list refresh — [ ]
 
 **Files:** `web/src/components/distress-toolbar.tsx`, `web/src/components/document-view-dialog.tsx`, `web/src/components/documents-panel.tsx`
 
@@ -277,7 +277,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 ## Phase 7 — Docs and final verification
 
-### Task 7.1 — README
+### Task 7.1 — README — [ ]
 
 **Files:** `README.md`
 
@@ -285,7 +285,7 @@ Execute tasks in order. Every task is independently checkable; do not start a ta
 
 **Done when:** README reflects the feature.
 
-### Task 7.2 — Full gate
+### Task 7.2 — Full gate — [ ]
 
 - `uv run pytest` — all green.
 - `uv run black .` — no changes.
