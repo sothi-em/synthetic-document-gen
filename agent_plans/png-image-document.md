@@ -21,21 +21,21 @@ Execute the steps below in order. Each step is self-contained and independently 
 
 **Files:** `document_gen/models/distress.py` (new), `document_gen/models/__init__.py`, `tests/test_models.py`
 
-New Pydantic model `DistressOptions` (exported from `models/__init__.py`), one flag per effect in the reference script (`document_distressor.py`), all defaulting to reasonable values:
+New Pydantic model `DistressOptions` (exported from `models/__init__.py`), one flag per effect in the distress pipeline (Step 3), all defaulting to reasonable values:
 
-| Field | Type | Default | Maps to script |
+| Field | Type | Default | Effect |
 |---|---|---|---|
 | `enabled` | bool | `False` | master switch |
 | `paper_aging` | bool | `True` | cream/beige paper tint |
 | `vignette` | bool | `True` | uneven lighting / dark edges |
-| `vignette_strength` | float 0–1 | `0.3` | `0.3 * (X²+Y²)` factor |
+| `vignette_strength` | float 0–1 | `0.3` | vignette falloff factor |
 | `stains` | bool | `True` | coffee/dirt blobs |
 | `stain_count` | int 0–20 | `4` | number of stain centers |
 | `noise` | bool | `True` | scanner grain |
 | `noise_strength` | float 0–50 | `12` | Gaussian σ |
 | `ink_fade` | bool | `True` | text blended into paper (faded ink) |
 | `blur` | bool | `True` | scanner focus-loss blur |
-| `warp` | bool | `False` | subtle feed/lens warp (not in the reference script — implemented with a small `cv2.remap` mesh displacement, `warp_strength` float default `0.5`) |
+| `warp` | bool | `False` | subtle feed/lens warp (implemented with a small `cv2.remap` mesh displacement, `warp_strength` float default `0.5`) |
 | `seed` | int \| None | `None` | reproducibility (falls back to company seed) |
 
 Field validators clamp ranges.
@@ -51,8 +51,16 @@ Field validators clamp ranges.
 **Files:** `document_gen/generators/png_gen.py` (new), `tests/test_png_gen.py` (new)
 
 - `distress_image(path: Path, options: DistressOptions, seed: int) -> None`
-  - Ports `apply_aging_effects` from the reference script into a flag-driven pipeline: paper tint → vignette → stains → noise → ink re-stamp (soft-alpha blend) → warp → blur. In-place (overwrites the PNG). Skipped entirely when `options.enabled` is `False` (perfect image).
-  - Note: the script assumes grayscale black-on-white; our PNGs are colored HTML renders, so the text/ink mask is derived from **luminance as a soft alpha** (`255 - luminance`) instead of the hard `< 128` mask — same visual result, works on colored content.
+  - Flag-driven pipeline (each stage gated by its `DistressOptions` flag, in this order): paper tint → vignette → stains → noise → ink re-stamp (soft-alpha blend) → warp → blur. In-place (overwrites the PNG). Skipped entirely when `options.enabled` is `False` (perfect image).
+  - Stage algorithms (based on an uncommitted reference script, inlined here so the plan is self-contained):
+    1. **paper tint** — build an RGB paper layer filled with soft cream `[245, 235, 215]` (BGR `[215, 235, 245]`).
+    2. **vignette** — `X, Y = np.meshgrid(linspace(-1, 1, w), linspace(-1, 1, h))`; multiply paper by `clip(1 - vignette_strength * (X² + Y²), 0, 1)` per channel.
+    3. **stains** — draw `stain_count` filled `cv2.circle` blobs (radius 40–120, random centers, seeded RNG) into a uint8 mask; `cv2.GaussianBlur(mask, (151, 151), 0)`; darken paper per channel by factor `1 - 0.35 * mask_norm * f` with per-channel `f` in `[0.75, 0.82, 0.88]` (differential darkening → brown tint).
+    4. **noise** — `cv2.randn(noise, 0, noise_strength)` on an int16 buffer; add to paper, clip 0–255.
+    5. **ink re-stamp** — derive the text/ink mask from the original clean render as **luminance-based soft alpha** (`alpha = (255 - luminance) / 255`); blend ink back over the dirty paper as `ink_px = 30 * 0.85 + paper * 0.15`, i.e. `out = alpha * ink_px + (1 - alpha) * paper` per channel (faded-ink look; no hard `< 128` threshold, so it works on colored HTML renders, not just grayscale).
+    6. **warp** — small `cv2.remap` mesh displacement (random low-frequency offsets scaled by `warp_strength`), seeded.
+    7. **blur** — `cv2.GaussianBlur(out, (3, 3), 0)` to mimic scanner focus loss.
+  - All randomness (stain centers, noise, warp offsets) driven by `seed` for reproducibility.
 
 **Tests:** `tests/test_png_gen.py` (no LLM) — distress on a synthetic numpy image: each flag toggles the corresponding change (e.g. noise raises pixel variance, stains darken, disabled = byte-identical), warp/blur shapes, seed determinism.
 
