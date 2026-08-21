@@ -29,13 +29,12 @@ See `README.md` for setup, configuration, and usage details.
 ```powershell
 # Install dependencies (creates .venv); add --extra embed for chromadb
 uv sync --group dev
-uv sync --group dev --extra web   # web UI (fastapi, uvicorn)
 
 # Run the CLI
 uv run document-gen migrate --from ./data/companies.json
 uv run document-gen --help
 
-# Web UI (requires `web` extra + built frontend; frontend uses pnpm)
+# Web UI (requires built frontend; frontend uses pnpm)
 cd web && pnpm install && pnpm build && cd ..
 uv run document-gen serve --port 8000
 
@@ -70,7 +69,7 @@ uv run black .
 - Pipeline/llm/labels modules require a live LLM server and are not
   unit-tested; keep them thin and test the models/prompts/CLI parsing instead.
 - `server.py` is unit-tested with the Ollama client mocked out
-  (`tests/test_server.py`); skipped automatically when the `web` extra is absent.
+  (`tests/test_server.py`).
 - `document_query.py` is fully unit-tested (`tests/test_document_query.py`) by
   pointing `TINYDB_PATH` at a temp file or unsetting it for in-memory mode;
   always call `document_query.reset_db()` when switching between the two.

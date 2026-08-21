@@ -1,6 +1,5 @@
 """Tests for the FastAPI web server in ``document_gen.server``.
 
-Skipped when the ``web`` extra (fastapi/httpx) is not installed.
 """
 
 from __future__ import annotations

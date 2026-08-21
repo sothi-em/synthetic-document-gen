@@ -681,6 +681,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "faker" },
+    { name = "fastapi" },
     { name = "json-repair" },
     { name = "matplotlib" },
     { name = "ollama" },
@@ -691,16 +692,13 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "tinydb" },
     { name = "tqdm" },
+    { name = "uvicorn", extra = ["standard"] },
     { name = "weasyprint" },
 ]
 
 [package.optional-dependencies]
 embed = [
     { name = "chromadb" },
-]
-web = [
-    { name = "fastapi" },
-    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.dev-dependencies]
@@ -715,7 +713,7 @@ dev = [
 requires-dist = [
     { name = "chromadb", marker = "extra == 'embed'", specifier = ">=1.5.9" },
     { name = "faker", specifier = ">=40.11.1" },
-    { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115" },
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "json-repair", specifier = ">=0.58.7" },
     { name = "matplotlib", specifier = ">=3.8.0" },
     { name = "ollama", specifier = ">=0.6.1" },
@@ -726,10 +724,10 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "tinydb", specifier = ">=4.8" },
     { name = "tqdm", specifier = ">=4.67.3" },
-    { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = ">=0.34" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
     { name = "weasyprint", specifier = ">=62.0" },
 ]
-provides-extras = ["embed", "web"]
+provides-extras = ["embed"]
 
 [package.metadata.requires-dev]
 dev = [

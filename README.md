@@ -68,7 +68,6 @@ Requires Python >= 3.13 and [uv](https://docs.astral.sh/uv/).
 ```powershell
 uv sync --group dev          # install deps + dev tools (pytest, black)
 uv sync --group dev --extra embed   # also install chromadb for label embedding
-uv sync --group dev --extra web     # also install the web UI (fastapi, uvicorn)
 ```
 
 Configure the LLM backends via `.env` (copy from `.env.example`). The chat
@@ -187,11 +186,9 @@ an interactive directory browser that navigates the server's filesystem.
 
 The frontend lives in `web/` (Vite + React + TypeScript, Tailwind CSS v4,
 shadcn/ui, managed with pnpm) and is served as static files by the FastAPI
-app. Requires the `web` extra plus a one-time frontend build:
+app. Requires a one-time frontend build:
 
 ```powershell
-uv sync --group dev --extra web
-
 cd web
 pnpm install
 pnpm build           # outputs web/dist, served by the API
@@ -243,7 +240,7 @@ uv run python -m document_gen.labels tags       # print unique tags
 document-gen/
 ├── document_gen/
 │   ├── cli.py            # CLI entry point (document-gen command)
-│   ├── server.py         # FastAPI web UI + JSON API (requires 'web' extra)
+│   ├── server.py         # FastAPI web UI + JSON API
 │   ├── pipeline.py       # Company generation pipeline (threaded)
 │   ├── document_query.py # TinyDB store (companies, document_types, documents, user_settings)
 │   ├── llm.py            # LLM backends (Ollama / OpenAI-compatible) + settings
