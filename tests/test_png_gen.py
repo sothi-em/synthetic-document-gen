@@ -678,6 +678,70 @@ class TestSanitizeImageHtml:
         assert "@page { size: 210mm 123.4mm; margin: 2cm; }" in forced
         assert "size: auto" not in forced
 
+    def test_body_background_promoted_to_page_rule(self) -> None:
+        raw = (
+            "<html><head><style>body { background: #F5F0E8; font-size: 9pt; }</style>"
+            "</head><body></body></html>"
+        )
+        doc = sanitize_image_html(raw, a4=True)
+        assert "@page { size: A4 portrait; margin: 2cm; background: #F5F0E8; }" in doc
+
+    def test_html_selector_background_color_promoted(self) -> None:
+        raw = (
+            "<html><head><style>html { background-color: rgb(245, 240, 232); }</style>"
+            "</head><body></body></html>"
+        )
+        doc = sanitize_image_html(raw, a4=False)
+        assert "background: rgb(245, 240, 232);" in doc
+        assert "size: auto" in doc
+
+    def test_non_color_body_background_not_promoted(self) -> None:
+        for value in (
+            "none",
+            "transparent",
+            "linear-gradient(#fff, #000)",
+            "url(paper.png)",
+        ):
+            raw = (
+                "<html><head><style>body { background: "
+                + value
+                + "; }</style></head><body></body></html>"
+            )
+            doc = sanitize_image_html(raw, a4=True)
+            # The canonical rule must stay background-free.
+            assert "@page { size: A4 portrait; margin: 2cm; }" in doc, value
+
+    def test_llm_page_background_carried_into_canonical_rule(self) -> None:
+        raw = (
+            "<html><head><style>@page { size: letter; background: #123456; }</style>"
+            "</head><body></body></html>"
+        )
+        doc = sanitize_image_html(raw, a4=True)
+        assert "@page { size: A4 portrait; margin: 2cm; background: #123456; }" in doc
+        # The LLM's own rule must not survive with a duplicate background.
+        assert doc.count("background: #123456;") == 1
+
+    def test_body_background_wins_over_page_background(self) -> None:
+        raw = (
+            "<html><head><style>@page { background: #111111; } "
+            "body { background: #F5F0E8; }</style>"
+            "</head><body></body></html>"
+        )
+        doc = sanitize_image_html(raw, a4=True)
+        assert "background: #F5F0E8;" in doc
+        assert "#111111" not in doc
+
+    def test_force_page_size_preserves_background(self) -> None:
+        raw = (
+            "<html><head><style>body { background: #F5F0E8; }</style>"
+            "</head><body></body></html>"
+        )
+        doc = sanitize_image_html(raw, a4=False)
+        forced = force_page_size(doc, "210mm", "123.4mm")
+        assert (
+            "@page { size: 210mm 123.4mm; margin: 2cm; background: #F5F0E8; }" in forced
+        )
+
 
 # ---------------------------------------------------------------------------
 # html_to_png

@@ -715,8 +715,10 @@ _MIN_PAGE_HEIGHT_MM = 100.0
 #: render cannot push the last line onto a second page.
 _HEIGHT_BUFFER_MM = 1.0
 
-#: Pixel value at or above which a pixel counts as "paper" (white).
-_PAPER_PIXEL = 250
+#: Per-channel distance from the sampled paper color at or below which
+#: a pixel still counts as "paper" (tolerates anti-aliasing and slight
+#: rendering jitter around the page background color).
+_PAPER_TOLERANCE = 16
 
 
 def _render_page_image(doc: str):
@@ -744,7 +746,10 @@ def _measure_content_height_mm(image, scale: float) -> float:
     """Measure the rendered content height in mm from page 1 of a render.
 
     Finds the last non-paper row and adds the bottom page margin plus a
-    small safety buffer.
+    small safety buffer. The paper color is sampled from the top-left
+    corner (inside the page margin, so it reflects the ``@page``
+    background, which may be a non-white paper color) instead of
+    assuming white.
 
     Args:
         image: Rasterized page 1 (PIL image).
@@ -755,10 +760,15 @@ def _measure_content_height_mm(image, scale: float) -> float:
     """
     import numpy as np
 
-    gray = np.frombuffer(image.convert("L").tobytes(), dtype=np.uint8).reshape(
-        image.size[1], image.size[0]
+    rgb = (
+        np.frombuffer(image.convert("RGB").tobytes(), dtype=np.uint8)
+        .reshape(image.size[1], image.size[0], 3)
+        .astype(np.int16)
     )
-    ink_rows = np.nonzero((gray < _PAPER_PIXEL).any(axis=1))[0]
+    paper = rgb[0, 0]
+    ink_rows = np.nonzero(
+        (np.abs(rgb - paper).max(axis=2) > _PAPER_TOLERANCE).any(axis=1)
+    )[0]
     bottom = int(ink_rows[-1]) + 1 if ink_rows.size else 0
     content_mm = bottom * 25.4 / (scale * 72.0)
     return max(_MIN_PAGE_HEIGHT_MM, content_mm + _MARGIN_MM + _HEIGHT_BUFFER_MM)

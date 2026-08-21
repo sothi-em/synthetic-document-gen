@@ -99,15 +99,160 @@ _PAGE_RULE_A4 = "@page { size: A4 portrait; margin: 2cm; }"
 #: supports ``size: auto`` -> the page sizes itself to the content).
 _PAGE_RULE_AUTO = "@page { size: auto; margin: 2cm; }"
 
+#: A simple (non-nested) CSS rule block: selector(s) + declaration body.
+_RULE_BLOCK = re.compile(r"([^{}]+)\{([^{}]*)\}")
+
+#: A ``background``/``background-color`` declaration with its value.
+_BG_DECL = re.compile(
+    r"(?<![\w-])(?:background(?:-color)?)\s*:\s*([^;{}]+)", re.IGNORECASE
+)
+
+#: A full top-level ``background``/``background-color`` declaration
+#: (value + trailing semicolon), for stripping from ``@page`` bodies.
+_AT_PAGE_BG_DECL = re.compile(
+    r"(?<![\w-])background(?:-color)?\s*:\s*[^;{}]+;?", re.IGNORECASE
+)
+
+#: CSS values that are a single plain color (hex, rgb/rgba, hsl/hsla,
+#: or a named color). Gradients, image URLs, and shorthand stacks fail
+#: to match and are ignored.
+_COLOR_VALUE = re.compile(
+    r"^(?:#[0-9a-fA-F]{3,8}"
+    r"|rgba?\(\s*[\d.]+%?\s*,\s*[\d.]+%?\s*,\s*[\d.]+%?(?:\s*,\s*[\d.]+)?\s*\)"
+    r"|hsla?\([^;{}]*\)"
+    r"|[a-zA-Z][a-zA-Z-]*"
+    r")$"
+)
+
+#: Background values that carry no paint and must not be promoted to
+#: the page rule.
+_NON_COLOR_VALUES = {
+    "none",
+    "transparent",
+    "inherit",
+    "initial",
+    "unset",
+    "currentcolor",
+}
+
+
+def _page_background_from_css(css: str) -> str | None:
+    """Return the first plain-color background declared on ``body``/``html``.
+
+    Scans simple (non-nested) rule blocks whose selector list contains
+    ``body`` or ``html`` and returns the value of the first top-level
+    ``background``/``background-color`` declaration that is a plain
+    color (hex, rgb/rgba, hsl/hsla, or a named color). Gradients, image
+    URLs, and ``none``/``transparent`` are ignored.
+
+    Args:
+        css: The CSS text to scan.
+
+    Returns:
+        The background color value, or ``None`` when no plain-color
+        body/html background is found.
+    """
+    for match in _RULE_BLOCK.finditer(css):
+        selectors = [s.strip() for s in match.group(1).split(",")]
+        if not any(sel in ("body", "html", ":root") for sel in selectors):
+            continue
+        for decl in _BG_DECL.finditer(match.group(2)):
+            value = decl.group(1).strip()
+            if value.lower() in _NON_COLOR_VALUES:
+                continue
+            if _COLOR_VALUE.match(value):
+                return value
+    return None
+
+
+def _first_page_background(css: str) -> str | None:
+    """Return the first top-level background declaration in any ``@page`` rule.
+
+    Declarations nested inside margin boxes (e.g. ``@bottom-center``)
+    are ignored. The declaration is returned verbatim (including its
+    trailing semicolon) so it can be re-injected into a canonical rule.
+
+    Args:
+        css: The CSS text to scan.
+
+    Returns:
+        The declaration string (e.g. ``"background: #F5F0E8;"``), or
+        ``None`` when no top-level ``@page`` background is found.
+    """
+    pos = 0
+    while True:
+        match = _AT_PAGE.search(css, pos)
+        if match is None:
+            return None
+        open_idx = css.find("{", match.end())
+        if open_idx == -1:
+            return None
+        end_idx = _find_rule_end(css, open_idx)
+        body = css[open_idx + 1 : end_idx - 1]
+        for decl in _AT_PAGE_BG_DECL.finditer(body):
+            depth = body[: decl.start()].count("{") - body[: decl.start()].count("}")
+            if depth == 0:
+                return decl.group(0).strip()
+        pos = end_idx
+
+
+def _strip_top_level_background(body: str) -> str:
+    """Remove top-level ``background`` declarations from an ``@page`` body.
+
+    Declarations nested inside margin boxes (e.g. ``@bottom-center``)
+    are left untouched.
+
+    Args:
+        body: The ``@page`` rule body text.
+
+    Returns:
+        The body with top-level background declarations removed.
+    """
+    result: list[str] = []
+    last = 0
+    for match in _AT_PAGE_BG_DECL.finditer(body):
+        depth = body[: match.start()].count("{") - body[: match.start()].count("}")
+        if depth == 0:
+            result.append(body[last : match.start()])
+            last = match.end()
+    result.append(body[last:])
+    return "".join(result)
+
+
+def _with_page_background(page_rule: str, background: str | None) -> str:
+    """Append a background declaration to a canonical *page_rule*.
+
+    Args:
+        page_rule: A canonical ``@page { ... }`` rule string.
+        background: A background color value (e.g. ``"#F5F0E8"``) or a
+            full declaration (e.g. ``"background: #F5F0E8;"``); ``None``
+            leaves the rule unchanged.
+
+    Returns:
+        The page rule with ``background: ...`` added before the closing
+        brace, or *page_rule* unchanged when *background* is ``None`` or
+        the rule already carries a background.
+    """
+    if background is None or "background" in page_rule.lower():
+        return page_rule
+    if ":" not in background:
+        background = f"background: {background};"
+    return page_rule.rstrip("}").rstrip() + f" {background} }}"
+
 
 def _fix_page_rules(css: str, page_rule: str) -> str:
     """Force *page_rule* on the CSS ``@page`` rule(s).
 
     The first ``@page`` rule is prefixed with the canonical *page_rule*;
     any ``size:``/``margin:`` declarations inside all ``@page`` rules are
-    stripped so they cannot override it. Nested margin-box rules (page
-    numbers etc.) are preserved.
+    stripped so they cannot override it. Top-level ``background:``
+    declarations are stripped too; the first one found is carried into
+    the canonical rule when the rule itself carries no background (this
+    preserves the page background that
+    :func:`sanitize_image_html` injects across :func:`force_page_size`
+    re-runs). Nested margin-box rules (page numbers etc.) are preserved.
     """
+    page_rule = _with_page_background(page_rule, _first_page_background(css))
     out: list[str] = []
     pos = 0
     first = True
@@ -122,7 +267,8 @@ def _fix_page_rules(css: str, page_rule: str) -> str:
             out.append(css[match.start() :])
             break
         end_idx = _find_rule_end(css, open_idx)
-        body = _strip_top_level_declarations(css[open_idx + 1 : end_idx - 1]).strip()
+        body = _strip_top_level_declarations(css[open_idx + 1 : end_idx - 1])
+        body = _strip_top_level_background(body).strip()
         if first:
             out.append(page_rule)
             first = False
@@ -168,6 +314,11 @@ def sanitize_image_html(html: str, a4: bool = True) -> str:
         (content-sized intent; WeasyPrint ignores ``size: auto`` and
         :func:`document_gen.generators.png_gen.html_to_png` replaces it
         with an explicit measured size via :func:`force_page_size`).
+    - Promotes a plain-color ``body``/``html`` background onto the
+      ``@page`` rule. WeasyPrint paints a ``body`` background only
+      inside the page margins, leaving the margin area white; injecting
+      the same color into ``@page`` makes the whole sheet (margins
+      included) one uniform paper color.
 
     Args:
         html: The raw HTML document string from the LLM.
@@ -179,6 +330,12 @@ def sanitize_image_html(html: str, a4: bool = True) -> str:
     """
     doc = _extract_document(html)
     page_rule = _PAGE_RULE_A4 if a4 else _PAGE_RULE_AUTO
+    for style in _STYLE_BLOCK.finditer(doc):
+        page_rule = _with_page_background(
+            page_rule, _page_background_from_css(style.group(2))
+        )
+        if "background" in page_rule.lower():
+            break
     return _apply_page_rule(doc, page_rule)
 
 
