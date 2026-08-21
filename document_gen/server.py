@@ -1390,7 +1390,9 @@ def distress_save(doc_id: int, payload: DistressEditRequest) -> dict:
 
     The render is re-derived from the stored original (which is left
     untouched, so the document stays re-editable) and written over the
-    record's ``filepath``; the record's ``size_kb`` is refreshed.
+    record's ``filepath``; the record's ``size_kb`` is refreshed and the
+    editor state (options + seeds) is stored so re-opening the preview
+    loads the same settings.
     """
     record, original_bytes = _distress_source_bytes(doc_id)
     try:
@@ -1401,7 +1403,12 @@ def distress_save(doc_id: int, payload: DistressEditRequest) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     Path(record["filepath"]).write_bytes(png_bytes)
     try:
-        updated = document_query.update_document_size(doc_id)
+        updated = document_query.save_document_distress(
+            doc_id,
+            payload.distress.model_dump(mode="json"),
+            payload.seed,
+            payload.stain_seed,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=404, detail="Document file not found on disk"

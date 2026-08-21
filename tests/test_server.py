@@ -1615,6 +1615,13 @@ class TestDistressEditor:
         assert listed is not None
         assert listed["size_kb"] == record["size_kb"]
 
+        # The editor state (options + the exact seeds) is persisted on
+        # the record so re-opening the preview loads the same settings.
+        assert listed["distress"]["seed"] == 42
+        assert listed["distress"]["stain_seed"] == 123
+        assert listed["distress"]["options"]["stain_count"] == 3
+        assert listed["distress"]["options"]["paper_aging"] is False
+
     def test_save_error_matrix(self, client, company_db, tmp_path) -> None:
         assert (
             client.post(

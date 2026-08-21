@@ -279,16 +279,44 @@ function distressTrace(
 }
 
 /**
- * Starting state for the toolbar. Images that were generated with
- * distress on load the settings recorded in the generation trace, so
- * the toolbar matches the persisted (distressed) render instead of
- * resetting it. Images generated without distress (or with a trace
- * missing its options block) start from :const:`CLEAN_OPTIONS` — all
- * flags false, values 0. `enabled` stays on so individual effect
- * toggles take effect immediately; untraced documents (toolbar
- * disabled anyway) fall back to :const:`DEFAULT_OPTIONS`.
+ * Editor state persisted by the distress save endpoint (options plus
+ * the exact seeds of the saved render), or `null` when the image has
+ * never been distressed and saved from the preview editor.
+ */
+function savedDistress(
+  doc: DocumentRecord,
+): { options: DistressOptions; seed: number; stainSeed: number } | null {
+  const d = doc.distress
+  if (typeof d !== "object" || d === null) return null
+  if (typeof d.options !== "object" || d.options === null) return null
+  if (typeof d.seed !== "number" || typeof d.stain_seed !== "number") return null
+  return {
+    options: {
+      ...CLEAN_OPTIONS,
+      ...(d.options as Partial<DistressOptions>),
+      enabled: true,
+    },
+    seed: d.seed,
+    stainSeed: d.stain_seed,
+  }
+}
+
+/**
+ * Starting state for the toolbar. Images distressed and saved from the
+ * preview editor load the persisted editor state (options + the exact
+ * pipeline seed of the saved render), so the toolbar matches the
+ * persisted image and toggling one effect re-renders the rest
+ * identically. Images with a generation trace that recorded distress
+ * fall back to the trace's options (seed pinned to the one used at
+ * generation). Everything else starts from :const:`CLEAN_OPTIONS` —
+ * all flags false, values 0, blank seed. `enabled` stays on so
+ * individual effect toggles take effect immediately; untraced
+ * documents (toolbar disabled anyway) fall back to
+ * :const:`DEFAULT_OPTIONS`.
  */
 function initialOptions(doc: DocumentRecord): DistressOptions {
+  const saved = savedDistress(doc)
+  if (saved !== null) return { ...saved.options, seed: saved.seed }
   const trace = distressTrace(doc)
   if (trace === null) return DEFAULT_OPTIONS
   const enabled = typeof trace.enabled === "boolean" ? trace.enabled : false
@@ -298,11 +326,17 @@ function initialOptions(doc: DocumentRecord): DistressOptions {
     return { ...CLEAN_OPTIONS, enabled: true }
   }
   const o = raw as Partial<DistressOptions>
+  const seed =
+    typeof o.seed === "number"
+      ? o.seed
+      : typeof trace.seed === "number"
+        ? trace.seed
+        : null
   return {
     ...CLEAN_OPTIONS,
     ...o,
     enabled: true,
-    seed: typeof o.seed === "number" ? o.seed : null,
+    seed,
   }
 }
 
@@ -361,7 +395,21 @@ export function DistressToolbar({
   const [justSaved, setJustSaved] = useState(false)
   /** Monotonic id so stale preview responses are dropped. */
   const requestRef = useRef(0)
-  const firstRunRef = useRef(true)
+  /**
+   * Options as last rendered (or shown on open). The preview effect only
+   * fires when this changes, so opening the dialog just displays the
+   * persisted image — no re-render (also StrictMode-safe: the effect's
+   * double invocation on mount sees unchanged options and skips).
+   */
+  const lastOptionsRef = useRef(options)
+  /**
+   * Stain seed for deterministic renders: the persisted one when the
+   * image was already distressed and saved (so re-renders match the
+   * saved image), otherwise derived from the document id.
+   */
+  const stainSeedRef = useRef<number>(
+    savedDistress(doc)?.stainSeed ?? stainSeedFor(doc.id),
+  )
   /**
    * Ephemeral seeds for blank-seed (random) mode: regenerated on every
    * options change so each toggle gives a new random render, and held
@@ -370,23 +418,18 @@ export function DistressToolbar({
   const ephemeralSeedsRef = useRef<{ seed: number; stainSeed: number } | null>(
     null,
   )
-  const lastOptionsRef = useRef(options)
 
   /**
    * Seeds for the next preview/save request. A user-entered seed is
-   * deterministic (stain seed derived from the document id); a blank
-   * seed uses the ephemeral random pair (refreshed per options change).
+   * deterministic (with the pinned stain seed); a blank seed uses the
+   * ephemeral random pair (refreshed per options change).
    */
   const seedsFor = (options: DistressOptions): { seed: number; stainSeed: number } => {
     if (options.seed !== null) {
-      return { seed: options.seed, stainSeed: stainSeedFor(doc.id) }
+      return { seed: options.seed, stainSeed: stainSeedRef.current }
     }
-    if (
-      ephemeralSeedsRef.current === null ||
-      lastOptionsRef.current !== options
-    ) {
+    if (ephemeralSeedsRef.current === null) {
       ephemeralSeedsRef.current = { seed: randomSeed(), stainSeed: randomSeed() }
-      lastOptionsRef.current = options
     }
     return ephemeralSeedsRef.current
   }
@@ -397,13 +440,15 @@ export function DistressToolbar({
 
   // Live preview loop: debounce ~300 ms per control change, then ask the
   // server to re-distress the stored original with the current options.
-  // The first run is skipped — the dialog already shows the persisted
-  // (saved) render, which matches the initial options.
+  // Only fires when the options actually change — on open (and on
+  // StrictMode's double effect invocation) the dialog just shows the
+  // persisted (saved) render, which matches the initial options.
   useEffect(() => {
     if (!editable) return
-    if (firstRunRef.current) {
-      firstRunRef.current = false
-      return
+    if (options === lastOptionsRef.current) return
+    lastOptionsRef.current = options
+    if (options.seed === null) {
+      ephemeralSeedsRef.current = { seed: randomSeed(), stainSeed: randomSeed() }
     }
     const reqId = ++requestRef.current
     setBusy(true)

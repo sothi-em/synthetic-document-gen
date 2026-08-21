@@ -276,6 +276,16 @@ export interface DocumentRecord {
   report_name: string | null
   /** Per-stage generation trace (only when generated with tracing on). */
   gen_tracing?: Record<string, unknown> | null
+  /**
+   * Distress editor state persisted by the save endpoint: the options
+   * plus the exact seeds of the saved render. Absent until the image
+   * has been distressed and saved from the preview editor.
+   */
+  distress?: {
+    options: DistressOptions
+    seed: number
+    stain_seed: number
+  } | null
 }
 
 export interface CompanyProfile {
