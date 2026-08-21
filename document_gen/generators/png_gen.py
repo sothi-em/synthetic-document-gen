@@ -84,7 +84,7 @@ def _build_augraphy_pipeline(
     - paper: paper aging tint, vignette (lighting gradient), stains,
       noise/brightness texturize, watermark, pattern, Voronoi/Delaunay
       tessellations, paper factory.
-    - post: photo-copy (kept first, see below), scanner grain, fax / drum
+    - post: photo-copy (perlin noise type, see below), scanner grain, fax / drum
       / roller / screen artifacts, shadow, lens flare, reflected light,
       brightness / gamma / color shift, depth blur, moire, LCD pattern,
       JPEG artifacts, double exposure, folding, bindings, markup,
@@ -209,13 +209,15 @@ def _build_augraphy_pipeline(
         paper_phase.append(ag.PaperFactory(generate_texture=1, p=1.0))
 
     post_phase = []
-    # BadPhotoCopy must be appended (and thus JIT-compiled) before
-    # SubtleNoise: with numba 0.67, compiling SubtleNoise's prange kernel
-    # first makes BadPhotoCopy's worley-noise parfor compilation crash
-    # with an AssertionError inside the numba compiler.
     if options.bad_photo_copy:
+        # noise_type=3 (perlin): the default -1 picks randomly from
+        # 1-4, and the worley kernel (type 4) crashes numba 0.67's
+        # compiler with a bare AssertionError at JIT time in this
+        # environment (reproduces in a fresh process, independent of
+        # augmentation order). Types 1-3 compile and run fine.
         post_phase.append(
             ag.BadPhotoCopy(
+                noise_type=3,
                 noise_side="random",
                 noise_sparsity=(0.1, 0.4),
                 noise_concentration=(0.1, 0.4),

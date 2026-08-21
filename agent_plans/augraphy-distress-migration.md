@@ -3,9 +3,10 @@
 > **Status (post Phase 1+2):** Phases 1 and 2 are implemented and committed.
 > During implementation the augraphy-only principle below (D9) was fixed:
 > the augraphy backend uses **native augraphy augmentations only** — no
-> legacy stage is re-implemented in cv2 to reproduce the old look. Three
-> 8.2.6 behaviors diverged from the original assumptions (see findings 8–10)
-> and were accepted as-is rather than papered over with custom code. The
+> legacy stage is re-implemented in cv2 to reproduce the old look. Four
+> 8.2.6 behaviors diverged from the original assumptions (see findings 8–10
+> and 14) and were worked around with native parameters only rather than
+> custom code. The
 > Phase 3 test expectations for `vignette` and `ink_fade` below are updated
 > accordingly.
 
@@ -137,6 +138,17 @@ Public contracts that must not change:
     scale (no resize back) and returns a **2D grayscale** array. The
     post-augment re-normalization in `distress_array` converts 2D→BGR and
     resizes to the input shape (`INTER_AREA`).
+14. **`BadPhotoCopy`'s worley kernel (noise_type=4) is compiler-broken
+    on numba 0.67.** `NoiseGenerator.generate_worley_noise` (the
+    `parallel=True` parfor kernel) raises a bare `AssertionError` inside
+    numba's type-inference stage at JIT time in this environment —
+    reproduced in a fresh process, independent of augmentation order
+    (finding 12's compile-order theory was wrong: the crash is the
+    worley kernel itself, hit whenever `noise_type=-1` randomly picks 4).
+    Noise types 1–3 (including perlin) compile and run fine. Fix: the
+    catalog pins `noise_type=3` (perlin) on `BadPhotoCopy` instead of the
+    random default. The Phase 3.2 combo guard test runs in a fresh
+    subprocess for this reason.
 
 ---
 
@@ -255,7 +267,7 @@ Public contracts that must not change:
 
 | `DistressOptions` field (default) | augraphy call (p=1.0) |
 |---|---|
-| `bad_photo_copy: bool` (False) | `BadPhotoCopy(noise_side="random", noise_sparsity=(0.1, 0.4), noise_concentration=(0.1, 0.4))` |
+| `bad_photo_copy: bool` (False) | `BadPhotoCopy(noise_type=3, noise_side="random", noise_sparsity=(0.1, 0.4), noise_concentration=(0.1, 0.4))` — `noise_type=3` (perlin) pinned: the random default can pick the worley kernel (type 4), whose numba 0.67 JIT compilation crashes (finding 14) |
 | `faxify: bool` (False) | `Faxify(scale_range=(1.0, 1.25))` |
 | `dirty_drum: bool` (False) | `DirtyDrum(line_concentration=0.1, line_width_range=(1, 4))` |
 | `dirty_rollers: bool` (False) | `DirtyRollers(line_width_range=(8, 12))` |
@@ -297,8 +309,9 @@ degradation), `InkGenerator`/`NoiseGenerator`/`TextureGenerator`/`PatternMaker`
   import inside the function, per repo convention).
 - Builds the three phase lists from the catalog above: an augmentation is
   appended iff its boolean flag is on; all get `p=1.0`; ranges fixed per
-  D6. **`BadPhotoCopy` is appended before `SubtleNoise`** in the post
-  phase (finding 12, numba compile-order crash).
+  D6. **`BadPhotoCopy` pins `noise_type=3`** (perlin) in the post phase
+  (finding 14, numba compiler crash in the worley kernel; supersedes the
+  finding-12 ordering workaround).
 - Pipeline kwargs: `overlay_alpha=0.85 if options.ink_fade else 1.0`,
   `random_seed=zlib.crc32(f"{seed}:{stain_seed}".encode()) if stain_seed is
   not None else seed` (D4), **masked to signed 32-bit** (`& 0x7FFFFFFF`)
@@ -448,11 +461,11 @@ legacy suite passing unmodified.
   `addopts`-free default run — keep them in the default run but with small
   params; only split out if the suite exceeds ~60 s).
 - These tests are the guard against augraphy API drift (finding 1).
-- **Combo guard (finding 12):** one test runs the full default options
+- **Combo guard (finding 14):** one test runs the full default options
   (`paper_aging`, `vignette`, `stains`, `noise`, `ink_fade`, `blur`) plus
-  `bad_photo_copy=True` in a fresh process and asserts it completes
-  without the numba `AssertionError`. This pins the `BadPhotoCopy`
-  before `SubtleNoise` post-phase ordering in `_build_augraphy_pipeline`.
+  `bad_photo_copy=True` in a fresh subprocess and asserts it completes
+  without the numba `AssertionError`. This pins the `noise_type=3`
+  (perlin) choice in `_build_augraphy_pipeline`.
 
 **Done when:** `uv run pytest tests/test_png_gen.py -k aug` green; full
 `uv run pytest` green.
@@ -579,7 +592,7 @@ flags).
 | Dual-path maintenance drift | Legacy path is frozen: `distress_array_legacy` is verbatim-preserved, documented as reference/fallback only, and all new effects land exclusively on the augraphy path; the legacy test suite must keep passing unmodified |
 | `stain_count` semantics change (count → intensity) | UI relabel ("Stain intensity"); field name/range unchanged for compat |
 | augraphy augments mutate/return float or 4-channel in edge cases | Assert `uint8` + 3-channel after `augment` in `distress_array`; re-normalize defensively |
-| numba 0.67 parfor compile crash (finding 12) | `BadPhotoCopy` appended before `SubtleNoise`; a per-augmentation smoke test (Phase 3.2) covering the full-defaults + `bad_photo_copy` combo guards the ordering |
+| numba 0.67 compile crash in `BadPhotoCopy`'s worley kernel (finding 14) | `noise_type=3` (perlin) pinned in `_build_augraphy_pipeline`; a fresh-subprocess combo test (Phase 3.2) covering full defaults + `bad_photo_copy` guards it |
 | `Faxify` returns grayscale at a resampled size (finding 13) | Post-augment re-normalization (2D→BGR, resize to input shape) in `distress_array` |
 | `ink_fade` has no visible effect on 8.2.6 (finding 8) | Accepted per D9; documented in the catalog and README (Phase 6); revisit if a future augraphy release honors `overlay_alpha` for `ink_to_paper` |
 

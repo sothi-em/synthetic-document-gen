@@ -7,6 +7,8 @@ the renderer uses WeasyPrint + pypdfium2 (hard dependencies).
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 import cv2
@@ -233,6 +235,14 @@ class TestDistressImage:
         distress_image(path, _options(), seed=42)
         assert _read(path).shape == (100, 100, 3)
 
+    def test_rgba_input_composited_over_white_legacy(self, tmp_path: Path) -> None:
+        rgba = np.zeros((100, 100, 4), dtype=np.uint8)
+        rgba[:, :, :3] = 255  # opaque white
+        path = tmp_path / "rgba.png"
+        assert cv2.imwrite(str(path), rgba)
+        distress_image(path, _options(backend="legacy"), seed=42)
+        assert _read(path).shape == (100, 100, 3)
+
     def test_seed_determinism_without_stains(self, tmp_path: Path) -> None:
         # Stains are intentionally unseeded, so byte-identity comparisons
         # disable them; noise and warp must still be seed-deterministic.
@@ -331,6 +341,276 @@ class TestDistressImageToBytes:
         out = distress_image_to_bytes(data, _options(), seed=1)
         arr = cv2.imdecode(np.frombuffer(out, np.uint8), cv2.IMREAD_UNCHANGED)
         assert arr is not None and arr.shape == (100, 100, 3)
+
+
+# ---------------------------------------------------------------------------
+# Augraphy backend (default) behavior
+# ---------------------------------------------------------------------------
+
+
+class TestAugraphyBackend:
+    """Behavior-level assertions for the default augraphy backend.
+
+    These intentionally do not encode the legacy hand-rolled look:
+    ``vignette`` is a native light-strip gradient (not a radial
+    dark-edge vignette) and ``ink_fade`` has no visible effect on the
+    8.2.6 ``ink_to_paper`` blend.
+    """
+
+    def test_all_effects_off_returns_clean_copy(self) -> None:
+        clean = _clean_image()
+        opts = _options(
+            paper_aging=False,
+            vignette=False,
+            stains=False,
+            noise=False,
+            ink_fade=False,
+            blur=False,
+            warp=False,
+        )
+        out = distress_array(clean, opts, seed=42)
+        assert out.shape == clean.shape
+        assert np.array_equal(out, clean)
+
+    def test_paper_aging_shifts_off_white_keeps_shape(self) -> None:
+        clean = _clean_image()
+        opts = _options(paper_aging=True, vignette=False, stains=False, noise=False)
+        out = distress_array(clean, opts, seed=42)
+        assert out.shape == clean.shape
+        # The paper tint moves the background off pure white.
+        assert _background(out).mean() < 250
+
+    def test_vignette_changes_image_keeps_shape(self) -> None:
+        clean = _clean_image()
+        opts = _options(paper_aging=False, vignette=True, stains=False, noise=False)
+        out = distress_array(clean, opts, seed=42)
+        assert out.shape == clean.shape
+        assert not np.array_equal(out, clean)
+
+    def test_stains_change_image(self) -> None:
+        clean = _clean_image()
+        opts = _options(
+            paper_aging=False,
+            vignette=False,
+            stains=True,
+            stain_count=10,
+            noise=False,
+        )
+        out = distress_array(clean, opts, seed=42)
+        assert out.shape == clean.shape
+        assert not np.array_equal(out, clean)
+
+    def test_zero_stain_count_no_stain_contribution(self) -> None:
+        clean = _clean_image()
+        opts = _options(
+            paper_aging=False,
+            vignette=False,
+            stains=False,
+            stain_count=0,
+            noise=False,
+            ink_fade=False,
+            blur=False,
+        )
+        out = distress_array(clean, opts, seed=42)
+        assert np.array_equal(out, clean)
+
+    def test_noise_raises_variance(self) -> None:
+        clean = _clean_image()
+        opts = _options(
+            paper_aging=False,
+            vignette=False,
+            stains=False,
+            noise=True,
+            noise_strength=20,
+        )
+        out = distress_array(clean, opts, seed=42)
+        bg = _background(out).astype(np.float32)
+        assert bg.std() > _background(clean).astype(np.float32).std() * 3
+
+    def test_paper_aging_keeps_ink_legible(self) -> None:
+        # The ink_to_paper overlay must keep the document content dark
+        # over the tinted paper.
+        clean = _clean_image()
+        opts = _options(paper_aging=True, vignette=False, stains=False, noise=False)
+        out = distress_array(clean, opts, seed=42)
+        ink_mask = cv2.cvtColor(clean, cv2.COLOR_BGR2GRAY) < 128
+        assert ink_mask.any()
+        assert out[ink_mask].mean() < 100
+
+    def test_ink_fade_accepted_both_settings(self) -> None:
+        # The 8.2.6 ink_to_paper blend ignores overlay_alpha, so this
+        # only asserts the toggle is accepted without error.
+        clean = _clean_image()
+        for fade in (True, False):
+            opts = _options(ink_fade=fade)
+            out = distress_array(clean, opts, seed=42)
+            assert out.shape == clean.shape
+
+    def test_determinism_same_seed_byte_identical(self, tmp_path: Path) -> None:
+        # Stains included: the augraphy pipeline is fully seeded, so the
+        # same (image, options, seed, stain_seed) tuple is byte-stable.
+        p1, p2, p3 = (tmp_path / f"img{i}.png" for i in range(3))
+        for p in (p1, p2, p3):
+            assert cv2.imwrite(str(p), _clean_image())
+        opts = _options()
+        distress_image(p1, opts, seed=7)
+        distress_image(p2, opts, seed=7)
+        distress_image(p3, opts, seed=8)
+        assert p1.read_bytes() == p2.read_bytes()
+        assert p1.read_bytes() != p3.read_bytes()
+
+    def test_stain_seed_determinism(self) -> None:
+        data = _clean_bytes()
+        opts = _stain_only_options()
+        out1 = distress_image_to_bytes(data, opts, seed=7, stain_seed=123)
+        out2 = distress_image_to_bytes(data, opts, seed=7, stain_seed=123)
+        out3 = distress_image_to_bytes(data, opts, seed=7, stain_seed=456)
+        assert out1 == out2
+        assert out1 != out3
+
+    def test_small_image_below_minimum_returns_without_raising(self) -> None:
+        small = np.ones((20, 20, 3), dtype=np.uint8) * 255
+        out = distress_array(small, _options(), seed=42)
+        assert out.shape == small.shape
+        assert out.dtype == np.uint8
+
+    def test_backend_isolation_augraphy_toggles_noop_on_legacy(self) -> None:
+        # Augraphy-only toggles must be no-ops on the legacy backend:
+        # legacy output with the toggles on is identical to the legacy
+        # output with them off (same seed, stains off for determinism).
+        clean = _clean_image()
+        common = dict(
+            backend="legacy",
+            paper_aging=True,
+            vignette=False,
+            stains=False,
+            noise=False,
+        )
+        with_toggle = distress_array(clean, _options(ink_bleed=True, **common), seed=42)
+        without_toggle = distress_array(clean, _options(**common), seed=42)
+        assert np.array_equal(with_toggle, without_toggle)
+
+
+# ---------------------------------------------------------------------------
+# Per-augmentation smoke tests (augraphy backend)
+#
+# One effect at a time on a synthetic document: guards against augraphy
+# API drift (renamed/removed parameters raise loudly at pipeline build).
+# ---------------------------------------------------------------------------
+
+NEW_INK_TOGGLES = [
+    "ink_bleed",
+    "bleed_through",
+    "letterpress",
+    "ink_mottling",
+    "ink_color_swap",
+    "hollow",
+    "dithering",
+    "dot_matrix",
+    "low_ink_periodic_lines",
+    "low_ink_random_lines",
+    "lines_degradation",
+]
+
+NEW_PAPER_TOGGLES = [
+    "noise_texturize",
+    "brightness_texturize",
+    "watermark",
+    "pattern_generator",
+    "voronoi_tessellation",
+    "delaunay_tessellation",
+    "paper_factory",
+]
+
+NEW_POST_TOGGLES = [
+    "bad_photo_copy",
+    "faxify",
+    "dirty_drum",
+    "dirty_rollers",
+    "dirty_screen",
+    "shadow_cast",
+    "lens_flare",
+    "reflected_light",
+    "brightness",
+    "gamma",
+    "color_shift",
+    "depth_blur",
+    "moire",
+    "lcd_pattern",
+    "jpeg_artifacts",
+    "double_exposure",
+    "folding",
+    "bindings",
+    "markup",
+    "scribbles",
+]
+
+ALL_NEW_TOGGLES = NEW_INK_TOGGLES + NEW_PAPER_TOGGLES + NEW_POST_TOGGLES
+
+#: Heavier augmentations (texture/tessellation/shadow generation).
+SLOW_TOGGLES = {
+    "paper_factory",
+    "voronoi_tessellation",
+    "delaunay_tessellation",
+    "shadow_cast",
+}
+
+
+class TestAugraphySmoke:
+    @pytest.mark.parametrize("toggle", sorted(SLOW_TOGGLES))
+    @pytest.mark.slow
+    def test_single_augmentation_slow(self, toggle: str) -> None:
+        self._run_single(toggle)
+
+    @pytest.mark.parametrize(
+        "toggle", [t for t in ALL_NEW_TOGGLES if t not in SLOW_TOGGLES]
+    )
+    def test_single_augmentation_fast(self, toggle: str) -> None:
+        self._run_single(toggle)
+
+    def _run_single(self, toggle: str) -> None:
+        clean = _clean_image()
+        opts = _options(
+            paper_aging=False,
+            vignette=False,
+            stains=False,
+            noise=False,
+            ink_fade=False,
+            blur=False,
+            warp=False,
+            **{toggle: True},
+        )
+        out = distress_array(clean, opts, seed=42)
+        assert out.shape == clean.shape
+        assert out.dtype == np.uint8
+        assert out.ndim == 3 and out.shape[2] == 3
+        assert not np.array_equal(out, clean)
+
+    def test_full_defaults_plus_bad_photo_copy_combo_fresh_process(self) -> None:
+        # numba 0.67 crash guard: BadPhotoCopy's JIT compilation must not
+        # hit the broken worley kernel (noise_type=3 is pinned in
+        # _build_augraphy_pipeline). Kernel JIT state is process-global,
+        # so the check runs in a *fresh* subprocess. Uses the full
+        # default options (paper_aging, vignette, stains, noise,
+        # ink_fade, blur) plus bad_photo_copy.
+        script = "\n".join(
+            [
+                "import numpy as np",
+                "from document_gen.generators.png_gen import distress_array",
+                "from document_gen.models.distress import DistressOptions",
+                "img = np.ones((300, 400, 3), dtype=np.uint8) * 255",
+                "opts = DistressOptions(enabled=True, bad_photo_copy=True)",
+                "out = distress_array(img, opts, seed=1, stain_seed=2)",
+                "assert out.shape == img.shape and out.dtype == np.uint8",
+            ]
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True
+        )
+        assert result.returncode == 0, (
+            f"fresh-process combo run failed (rc={result.returncode}): "
+            f"{result.stderr[-2000:] or result.stdout[-2000:]}."
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -46,6 +46,9 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: heavier augraphy augmentations (texture/tessellation/shadow generation)",
+]
 
 [tool.coverage.run]
 # Coverage target is the models package (see AGENTS.md); pipeline/ollama/

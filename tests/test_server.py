@@ -1280,6 +1280,40 @@ class TestCompanyImage:
         assert calls["distress"].stain_count == 7
         assert calls["distress"].warp is True
 
+    def test_distress_new_fields_accepted(
+        self, client, company_db, monkeypatch, tmp_path
+    ) -> None:
+        from types import SimpleNamespace
+
+        out = tmp_path / "reports"
+        monkeypatch.setenv("DOCUMENTS_DIR", str(out))
+        calls: dict = {}
+
+        def fake_generate(company_id, report, **kwargs):
+            calls.update(kwargs)
+            return SimpleNamespace(
+                png_path=out / "acme_report.png", report_name="Guide"
+            )
+
+        monkeypatch.setattr(
+            server.document_png, "generate_document_image", fake_generate
+        )
+        # A body with only augraphy-only fields (no legacy keys) is valid:
+        # the legacy fields keep their defaults and backend defaults to
+        # "augraphy".
+        response = client.post(
+            f"/api/companies/{company_db[0]}/image",
+            json={
+                "report": "Guide",
+                "distress": {"enabled": True, "ink_bleed": True},
+            },
+        )
+        assert response.status_code == 202
+        _poll_job(client, response.json()["id"])
+        assert calls["distress"].ink_bleed is True
+        assert calls["distress"].backend == "augraphy"
+        assert calls["distress"].paper_aging is True  # model default
+
     def test_job_error(self, client, company_db, monkeypatch, tmp_path) -> None:
         monkeypatch.setenv("DOCUMENTS_DIR", str(tmp_path))
 

@@ -137,8 +137,12 @@ export function GenerateImageDialog({
   }
 
   function buildDistress(): DistressOptions {
+    // The dialog only exposes the master switch + the legacy sliders;
+    // the augraphy-only effects stay at their defaults (off) and are
+    // configured in the live editor after generation.
     return {
       enabled: distressOn,
+      backend: "augraphy",
       paper_aging: distress.paperAging,
       vignette: distress.vignette,
       vignette_strength: distress.vignetteStrength,
@@ -151,6 +155,47 @@ export function GenerateImageDialog({
       warp: distress.warp,
       warp_strength: distress.warpStrength,
       seed: null,
+      ink_bleed: false,
+      bleed_through: false,
+      letterpress: false,
+      ink_mottling: false,
+      ink_color_swap: false,
+      hollow: false,
+      dithering: false,
+      dot_matrix: false,
+      low_ink_periodic_lines: false,
+      low_ink_random_lines: false,
+      lines_degradation: false,
+      noise_texturize: false,
+      brightness_texturize: false,
+      watermark: false,
+      watermark_word: "CONFIDENTIAL",
+      pattern_generator: false,
+      voronoi_tessellation: false,
+      delaunay_tessellation: false,
+      paper_factory: false,
+      bad_photo_copy: false,
+      faxify: false,
+      dirty_drum: false,
+      dirty_rollers: false,
+      dirty_screen: false,
+      shadow_cast: false,
+      lens_flare: false,
+      reflected_light: false,
+      brightness: false,
+      gamma: false,
+      color_shift: false,
+      depth_blur: false,
+      moire: false,
+      lcd_pattern: false,
+      jpeg_artifacts: false,
+      jpeg_quality: 50,
+      double_exposure: false,
+      folding: false,
+      fold_count: 2,
+      bindings: false,
+      markup: false,
+      scribbles: false,
     }
   }
 

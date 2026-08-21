@@ -149,10 +149,13 @@ export interface ExcelJobResult {
 export interface DistressOptions {
   /** Master switch; false = perfect (undistressed) image. */
   enabled: boolean
+  /** Rendering engine: "augraphy" (default) or "legacy". */
+  backend: "augraphy" | "legacy"
   paper_aging: boolean
   vignette: boolean
   vignette_strength: number
   stains: boolean
+  /** Stain intensity on the augraphy backend (0 = no stains). */
   stain_count: number
   noise: boolean
   noise_strength: number
@@ -162,6 +165,53 @@ export interface DistressOptions {
   warp_strength: number
   /** Random seed; null = company seed. */
   seed: number | null
+  // --- ink phase (augraphy backend) ---
+  ink_bleed: boolean
+  bleed_through: boolean
+  letterpress: boolean
+  ink_mottling: boolean
+  ink_color_swap: boolean
+  hollow: boolean
+  dithering: boolean
+  dot_matrix: boolean
+  low_ink_periodic_lines: boolean
+  low_ink_random_lines: boolean
+  lines_degradation: boolean
+  // --- paper phase (augraphy backend) ---
+  noise_texturize: boolean
+  brightness_texturize: boolean
+  watermark: boolean
+  /** Watermark word (empty = random). */
+  watermark_word: string
+  pattern_generator: boolean
+  voronoi_tessellation: boolean
+  delaunay_tessellation: boolean
+  paper_factory: boolean
+  // --- post phase (augraphy backend) ---
+  bad_photo_copy: boolean
+  faxify: boolean
+  dirty_drum: boolean
+  dirty_rollers: boolean
+  dirty_screen: boolean
+  shadow_cast: boolean
+  lens_flare: boolean
+  reflected_light: boolean
+  brightness: boolean
+  gamma: boolean
+  color_shift: boolean
+  depth_blur: boolean
+  moire: boolean
+  lcd_pattern: boolean
+  jpeg_artifacts: boolean
+  /** Target JPEG quality for the artifacts (10-95). */
+  jpeg_quality: number
+  double_exposure: boolean
+  folding: boolean
+  /** Number of fold creases (1-6). */
+  fold_count: number
+  bindings: boolean
+  markup: boolean
+  scribbles: boolean
 }
 
 export interface DocumentImageRequest {
