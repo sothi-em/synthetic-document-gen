@@ -152,6 +152,7 @@ export interface DistressOptions {
   /** Rendering engine: "augraphy" (default) or "legacy". */
   backend: "augraphy" | "legacy"
   paper_aging: boolean
+  paper_aging_intensity: number
   vignette: boolean
   vignette_strength: number
   stains: boolean
@@ -160,58 +161,96 @@ export interface DistressOptions {
   noise: boolean
   noise_strength: number
   ink_fade: boolean
+  ink_fade_intensity: number
   blur: boolean
+  blur_intensity: number
   warp: boolean
   warp_strength: number
   /** Random seed; null = company seed. */
   seed: number | null
   // --- ink phase (augraphy backend) ---
   ink_bleed: boolean
+  ink_bleed_intensity: number
   bleed_through: boolean
+  bleed_through_intensity: number
   letterpress: boolean
+  letterpress_intensity: number
   ink_mottling: boolean
+  ink_mottling_intensity: number
   ink_color_swap: boolean
+  ink_color_swap_intensity: number
   hollow: boolean
+  hollow_intensity: number
   dithering: boolean
+  dithering_intensity: number
   dot_matrix: boolean
+  dot_matrix_intensity: number
   low_ink_periodic_lines: boolean
+  low_ink_periodic_lines_intensity: number
   low_ink_random_lines: boolean
+  low_ink_random_lines_intensity: number
   lines_degradation: boolean
+  lines_degradation_intensity: number
   // --- paper phase (augraphy backend) ---
   noise_texturize: boolean
+  noise_texturize_intensity: number
   brightness_texturize: boolean
+  brightness_texturize_intensity: number
   watermark: boolean
+  watermark_intensity: number
   /** Watermark word (empty = random). */
   watermark_word: string
   pattern_generator: boolean
+  pattern_generator_intensity: number
   voronoi_tessellation: boolean
+  voronoi_tessellation_intensity: number
   delaunay_tessellation: boolean
+  delaunay_tessellation_intensity: number
   paper_factory: boolean
+  paper_factory_intensity: number
   // --- post phase (augraphy backend) ---
   bad_photo_copy: boolean
+  bad_photo_copy_intensity: number
   faxify: boolean
+  faxify_intensity: number
   dirty_drum: boolean
+  dirty_drum_intensity: number
   dirty_rollers: boolean
+  dirty_rollers_intensity: number
   dirty_screen: boolean
+  dirty_screen_intensity: number
   shadow_cast: boolean
+  shadow_cast_intensity: number
   lens_flare: boolean
+  lens_flare_intensity: number
   reflected_light: boolean
+  reflected_light_intensity: number
   brightness: boolean
+  brightness_intensity: number
   gamma: boolean
+  gamma_intensity: number
   color_shift: boolean
+  color_shift_intensity: number
   depth_blur: boolean
+  depth_blur_intensity: number
   moire: boolean
+  moire_intensity: number
   lcd_pattern: boolean
+  lcd_pattern_intensity: number
   jpeg_artifacts: boolean
-  /** Target JPEG quality for the artifacts (10-95). */
+  /** Target JPEG quality for the artifacts (10-95; 95 = off). */
   jpeg_quality: number
   double_exposure: boolean
+  double_exposure_intensity: number
   folding: boolean
   /** Number of fold creases (1-6). */
   fold_count: number
   bindings: boolean
+  bindings_intensity: number
   markup: boolean
+  markup_intensity: number
   scribbles: boolean
+  scribbles_intensity: number
 }
 
 export interface DocumentImageRequest {

@@ -19,25 +19,19 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
-import { Switch } from "@/components/ui/switch"
 
 /**
  * Defaults mirroring `document_gen.models.distress.DistressOptions`
- * (with `enabled` on). Used only when the document has no generation
- * trace at all, in which case the toolbar is disabled anyway.
+ * (with `enabled` on; intensities resolved from the flags, as the
+ * backend does). Used only when the document has no generation trace
+ * at all, in which case the toolbar is disabled anyway.
  */
 const DEFAULT_OPTIONS: DistressOptions = {
   enabled: true,
   backend: "augraphy",
   paper_aging: true,
+  paper_aging_intensity: 1,
   vignette: true,
   vignette_strength: 0.3,
   stains: true,
@@ -45,63 +39,101 @@ const DEFAULT_OPTIONS: DistressOptions = {
   noise: true,
   noise_strength: 12,
   ink_fade: true,
+  ink_fade_intensity: 1,
   blur: true,
+  blur_intensity: 1,
   warp: false,
   warp_strength: 0.5,
   seed: null,
   ink_bleed: false,
+  ink_bleed_intensity: 0,
   bleed_through: false,
+  bleed_through_intensity: 0,
   letterpress: false,
+  letterpress_intensity: 0,
   ink_mottling: false,
+  ink_mottling_intensity: 0,
   ink_color_swap: false,
+  ink_color_swap_intensity: 0,
   hollow: false,
+  hollow_intensity: 0,
   dithering: false,
+  dithering_intensity: 0,
   dot_matrix: false,
+  dot_matrix_intensity: 0,
   low_ink_periodic_lines: false,
+  low_ink_periodic_lines_intensity: 0,
   low_ink_random_lines: false,
+  low_ink_random_lines_intensity: 0,
   lines_degradation: false,
+  lines_degradation_intensity: 0,
   noise_texturize: false,
+  noise_texturize_intensity: 0,
   brightness_texturize: false,
+  brightness_texturize_intensity: 0,
   watermark: false,
+  watermark_intensity: 0,
   watermark_word: "CONFIDENTIAL",
   pattern_generator: false,
+  pattern_generator_intensity: 0,
   voronoi_tessellation: false,
+  voronoi_tessellation_intensity: 0,
   delaunay_tessellation: false,
+  delaunay_tessellation_intensity: 0,
   paper_factory: false,
+  paper_factory_intensity: 0,
   bad_photo_copy: false,
+  bad_photo_copy_intensity: 0,
   faxify: false,
+  faxify_intensity: 0,
   dirty_drum: false,
+  dirty_drum_intensity: 0,
   dirty_rollers: false,
+  dirty_rollers_intensity: 0,
   dirty_screen: false,
+  dirty_screen_intensity: 0,
   shadow_cast: false,
+  shadow_cast_intensity: 0,
   lens_flare: false,
+  lens_flare_intensity: 0,
   reflected_light: false,
+  reflected_light_intensity: 0,
   brightness: false,
+  brightness_intensity: 0,
   gamma: false,
+  gamma_intensity: 0,
   color_shift: false,
+  color_shift_intensity: 0,
   depth_blur: false,
+  depth_blur_intensity: 0,
   moire: false,
+  moire_intensity: 0,
   lcd_pattern: false,
+  lcd_pattern_intensity: 0,
   jpeg_artifacts: false,
   jpeg_quality: 50,
   double_exposure: false,
+  double_exposure_intensity: 0,
   folding: false,
   fold_count: 2,
   bindings: false,
+  bindings_intensity: 0,
   markup: false,
+  markup_intensity: 0,
   scribbles: false,
+  scribbles_intensity: 0,
 }
 
 /**
  * Starting state for traced images generated without distress: no
- * effect flag is set and every value is 0, so the render starts from
- * a clean look. Options that were not applied at generation are never
- * preset.
+ * effect flag is set, every intensity is 0 and every numeric value is
+ * at its off value, so the render starts from a clean look.
  */
 const CLEAN_OPTIONS: DistressOptions = {
   ...DEFAULT_OPTIONS,
   enabled: false,
   paper_aging: false,
+  paper_aging_intensity: 0,
   vignette: false,
   vignette_strength: 0,
   stains: false,
@@ -109,77 +141,134 @@ const CLEAN_OPTIONS: DistressOptions = {
   noise: false,
   noise_strength: 0,
   ink_fade: false,
+  ink_fade_intensity: 0,
   blur: false,
+  blur_intensity: 0,
   warp: false,
   warp_strength: 0,
   watermark_word: "",
+  jpeg_quality: 95,
+  fold_count: 1,
 }
 
 type SectionKey = "ink" | "paper" | "post"
 
 interface EffectDef {
+  /** Boolean flag key; derived from the slider value (0 = off). */
   key: keyof DistressOptions
   label: string
-  /** Only effective on the augraphy backend (no-op on legacy). */
-  augraphyOnly?: boolean
+  /** 0-1 intensity field (effects without a numeric parameter). */
+  intensityKey?: keyof DistressOptions
+  /** Existing numeric field acting as the intensity. */
+  valueKey?: keyof DistressOptions
+  min: number
+  max: number
+  step: number
+  fmt: (v: number) => string
+}
+
+/** Default slider spec for 0-1 intensity effects. */
+function intensityEffect(key: keyof DistressOptions, label: string): EffectDef {
+  return {
+    key,
+    label,
+    intensityKey: `${key}_intensity` as keyof DistressOptions,
+    min: 0,
+    max: 1,
+    step: 0.05,
+    fmt: (v) => v.toFixed(2),
+  }
+}
+
+/** Slider spec for effects with a dedicated numeric parameter. */
+function valueEffect(
+  key: keyof DistressOptions,
+  label: string,
+  valueKey: keyof DistressOptions,
+  min: number,
+  max: number,
+  step: number,
+  fmt: (v: number) => string,
+): EffectDef {
+  return { key, label, valueKey, min, max, step, fmt }
 }
 
 const INK_EFFECTS: EffectDef[] = [
-  { key: "ink_fade", label: "Ink fade" },
-  { key: "ink_bleed", label: "Ink bleed", augraphyOnly: true },
-  { key: "bleed_through", label: "Bleed through", augraphyOnly: true },
-  { key: "letterpress", label: "Letterpress", augraphyOnly: true },
-  { key: "ink_mottling", label: "Ink mottling", augraphyOnly: true },
-  { key: "ink_color_swap", label: "Ink color swap", augraphyOnly: true },
-  { key: "hollow", label: "Hollow strokes", augraphyOnly: true },
-  { key: "dithering", label: "Dithering", augraphyOnly: true },
-  { key: "dot_matrix", label: "Dot matrix", augraphyOnly: true },
-  { key: "low_ink_periodic_lines", label: "Low ink (periodic)", augraphyOnly: true },
-  { key: "low_ink_random_lines", label: "Low ink (random)", augraphyOnly: true },
-  { key: "lines_degradation", label: "Line degradation", augraphyOnly: true },
+  intensityEffect("ink_fade", "Ink fade"),
+  intensityEffect("ink_bleed", "Ink bleed"),
+  intensityEffect("bleed_through", "Bleed through"),
+  intensityEffect("letterpress", "Letterpress"),
+  intensityEffect("ink_mottling", "Ink mottling"),
+  intensityEffect("ink_color_swap", "Ink color swap"),
+  intensityEffect("hollow", "Hollow strokes"),
+  intensityEffect("dithering", "Dithering"),
+  intensityEffect("dot_matrix", "Dot matrix"),
+  intensityEffect("low_ink_periodic_lines", "Low ink (periodic)"),
+  intensityEffect("low_ink_random_lines", "Low ink (random)"),
+  intensityEffect("lines_degradation", "Line degradation"),
 ]
 
 const PAPER_EFFECTS: EffectDef[] = [
-  { key: "paper_aging", label: "Paper aging" },
-  { key: "stains", label: "Stains" },
-  { key: "noise", label: "Noise" },
-  { key: "noise_texturize", label: "Noise texturize", augraphyOnly: true },
-  {
-    key: "brightness_texturize",
-    label: "Brightness texturize",
-    augraphyOnly: true,
-  },
-  { key: "watermark", label: "Watermark", augraphyOnly: true },
-  { key: "pattern_generator", label: "Pattern", augraphyOnly: true },
-  { key: "voronoi_tessellation", label: "Voronoi texture", augraphyOnly: true },
-  { key: "delaunay_tessellation", label: "Delaunay texture", augraphyOnly: true },
-  { key: "paper_factory", label: "Paper texture", augraphyOnly: true },
+  intensityEffect("paper_aging", "Paper aging"),
+  valueEffect("stains", "Stains", "stain_count", 0, 20, 1, (v) => `${v} stains`),
+  valueEffect("noise", "Noise", "noise_strength", 0, 50, 1, (v) => String(v)),
+  intensityEffect("noise_texturize", "Noise texturize"),
+  intensityEffect("brightness_texturize", "Brightness texturize"),
+  intensityEffect("watermark", "Watermark"),
+  intensityEffect("pattern_generator", "Pattern"),
+  intensityEffect("voronoi_tessellation", "Voronoi texture"),
+  intensityEffect("delaunay_tessellation", "Delaunay texture"),
+  intensityEffect("paper_factory", "Paper texture"),
 ]
 
 const POST_EFFECTS: EffectDef[] = [
-  { key: "vignette", label: "Vignette" },
-  { key: "blur", label: "Blur" },
-  { key: "warp", label: "Warp" },
-  { key: "bad_photo_copy", label: "Bad photo copy", augraphyOnly: true },
-  { key: "faxify", label: "Faxify", augraphyOnly: true },
-  { key: "dirty_drum", label: "Dirty drum", augraphyOnly: true },
-  { key: "dirty_rollers", label: "Dirty rollers", augraphyOnly: true },
-  { key: "dirty_screen", label: "Dirty screen", augraphyOnly: true },
-  { key: "shadow_cast", label: "Shadow cast", augraphyOnly: true },
-  { key: "lens_flare", label: "Lens flare", augraphyOnly: true },
-  { key: "reflected_light", label: "Reflected light", augraphyOnly: true },
-  { key: "brightness", label: "Brightness", augraphyOnly: true },
-  { key: "gamma", label: "Gamma", augraphyOnly: true },
-  { key: "color_shift", label: "Color shift", augraphyOnly: true },
-  { key: "depth_blur", label: "Depth blur", augraphyOnly: true },
-  { key: "moire", label: "Moire", augraphyOnly: true },
-  { key: "lcd_pattern", label: "LCD pattern", augraphyOnly: true },
-  { key: "jpeg_artifacts", label: "JPEG artifacts", augraphyOnly: true },
-  { key: "double_exposure", label: "Double exposure", augraphyOnly: true },
-  { key: "folding", label: "Folding", augraphyOnly: true },
-  { key: "bindings", label: "Bindings", augraphyOnly: true },
-  { key: "markup", label: "Markup", augraphyOnly: true },
-  { key: "scribbles", label: "Scribbles", augraphyOnly: true },
+  valueEffect(
+    "vignette",
+    "Vignette",
+    "vignette_strength",
+    0,
+    1,
+    0.05,
+    (v) => v.toFixed(2),
+  ),
+  intensityEffect("blur", "Blur"),
+  valueEffect(
+    "warp",
+    "Warp",
+    "warp_strength",
+    0,
+    1,
+    0.05,
+    (v) => v.toFixed(2),
+  ),
+  intensityEffect("bad_photo_copy", "Bad photo copy"),
+  intensityEffect("faxify", "Faxify"),
+  intensityEffect("dirty_drum", "Dirty drum"),
+  intensityEffect("dirty_rollers", "Dirty rollers"),
+  intensityEffect("dirty_screen", "Dirty screen"),
+  intensityEffect("shadow_cast", "Shadow cast"),
+  intensityEffect("lens_flare", "Lens flare"),
+  intensityEffect("reflected_light", "Reflected light"),
+  intensityEffect("brightness", "Brightness"),
+  intensityEffect("gamma", "Gamma"),
+  intensityEffect("color_shift", "Color shift"),
+  intensityEffect("depth_blur", "Depth blur"),
+  intensityEffect("moire", "Moire"),
+  intensityEffect("lcd_pattern", "LCD pattern"),
+  valueEffect(
+    "jpeg_artifacts",
+    "JPEG quality",
+    "jpeg_quality",
+    10,
+    95,
+    1,
+    (v) => String(v),
+  ),
+  intensityEffect("double_exposure", "Double exposure"),
+  valueEffect("folding", "Folding", "fold_count", 1, 6, 1, (v) => `${v} folds`),
+  intensityEffect("bindings", "Bindings"),
+  intensityEffect("markup", "Markup"),
+  intensityEffect("scribbles", "Scribbles"),
 ]
 
 const SECTIONS: { key: SectionKey; label: string; effects: EffectDef[] }[] = [
@@ -188,82 +277,86 @@ const SECTIONS: { key: SectionKey; label: string; effects: EffectDef[] }[] = [
   { key: "post", label: "Post", effects: POST_EFFECTS },
 ]
 
-interface SliderDef {
-  key: keyof DistressOptions
-  label: string
-  min: number
-  max: number
-  step: number
-  /** Slider is disabled when the parent effect switch is off. */
-  off: (o: DistressOptions) => boolean
-  fmt: (v: number) => string
+/**
+ * Boolean flags that carry a 0-1 ``*_intensity`` field (mirrors the
+ * backend model); every other effect has a dedicated numeric field.
+ */
+const INTENSITY_EFFECTS: (keyof DistressOptions)[] = [
+  "ink_fade",
+  "ink_bleed",
+  "bleed_through",
+  "letterpress",
+  "ink_mottling",
+  "ink_color_swap",
+  "hollow",
+  "dithering",
+  "dot_matrix",
+  "low_ink_periodic_lines",
+  "low_ink_random_lines",
+  "lines_degradation",
+  "paper_aging",
+  "noise_texturize",
+  "brightness_texturize",
+  "watermark",
+  "pattern_generator",
+  "voronoi_tessellation",
+  "delaunay_tessellation",
+  "paper_factory",
+  "bad_photo_copy",
+  "faxify",
+  "dirty_drum",
+  "dirty_rollers",
+  "dirty_screen",
+  "shadow_cast",
+  "lens_flare",
+  "reflected_light",
+  "brightness",
+  "gamma",
+  "color_shift",
+  "depth_blur",
+  "moire",
+  "lcd_pattern",
+  "double_exposure",
+  "bindings",
+  "markup",
+  "scribbles",
+  "blur",
+]
+
+/** Current slider value for an effect. */
+function effectValue(e: EffectDef, o: DistressOptions): number {
+  return Number(o[e.intensityKey ?? e.valueKey!])
 }
 
-const SLIDERS: Record<SectionKey, SliderDef[]> = {
-  ink: [],
-  paper: [
-    {
-      key: "stain_count",
-      label: "Stain intensity",
-      min: 0,
-      max: 20,
-      step: 1,
-      off: (o) => !o.stains,
-      fmt: (v) => String(v),
-    },
-    {
-      key: "noise_strength",
-      label: "Noise strength",
-      min: 0,
-      max: 50,
-      step: 1,
-      off: (o) => !o.noise,
-      fmt: (v) => String(v),
-    },
-  ],
-  post: [
-    {
-      key: "vignette_strength",
-      label: "Vignette strength",
-      min: 0,
-      max: 1,
-      step: 0.05,
-      off: (o) => !o.vignette,
-      fmt: (v) => v.toFixed(2),
-    },
-    {
-      key: "warp_strength",
-      label: "Warp strength",
-      min: 0,
-      max: 1,
-      step: 0.05,
-      off: (o) => !o.warp,
-      fmt: (v) => v.toFixed(2),
-    },
-    {
-      key: "jpeg_quality",
-      label: "JPEG quality",
-      min: 10,
-      max: 95,
-      step: 1,
-      off: (o) => !o.jpeg_artifacts,
-      fmt: (v) => String(v),
-    },
-    {
-      key: "fold_count",
-      label: "Fold count",
-      min: 1,
-      max: 6,
-      step: 1,
-      off: (o) => !o.folding,
-      fmt: (v) => String(v),
-    },
-  ],
+/** Whether an effect is active (slider above its off value). */
+function isActive(e: EffectDef, o: DistressOptions): boolean {
+  if (e.key === "jpeg_artifacts") return o.jpeg_quality < 95
+  return effectValue(e, o) > 0
 }
 
-/** Number of active (on) effect toggles in a section. */
+/** Number of active effects in a section. */
 function activeCount(effects: EffectDef[], options: DistressOptions): number {
-  return effects.filter((e) => Boolean(options[e.key])).length
+  return effects.filter((e) => isActive(e, options)).length
+}
+
+/**
+ * Fill in intensities for options saved before the intensity fields
+ * existed: a missing intensity resolves from its flag (on -> 1, off ->
+ * 0) so old renders match their toolbar state. Explicit intensities
+ * are kept as saved.
+ */
+function resolveIntensities(
+  raw: Partial<DistressOptions>,
+  merged: DistressOptions,
+): DistressOptions {
+  const next: DistressOptions = { ...merged }
+  for (const flag of INTENSITY_EFFECTS) {
+    const key = `${flag}_intensity` as keyof DistressOptions
+    if (raw[key] === undefined) {
+      ;(next as unknown as Record<string, unknown>)[key] = merged[flag] ? 1 : 0
+    }
+  }
+  return next
 }
 
 /** Defensive read of `gen_tracing.stages.distress` (opaque record). */
@@ -290,12 +383,13 @@ function savedDistress(
   if (typeof d !== "object" || d === null) return null
   if (typeof d.options !== "object" || d.options === null) return null
   if (typeof d.seed !== "number" || typeof d.stain_seed !== "number") return null
+  const raw = d.options as Partial<DistressOptions>
   return {
-    options: {
+    options: resolveIntensities(raw, {
       ...CLEAN_OPTIONS,
-      ...(d.options as Partial<DistressOptions>),
+      ...raw,
       enabled: true,
-    },
+    }),
     seed: d.seed,
     stainSeed: d.stain_seed,
   }
@@ -305,14 +399,15 @@ function savedDistress(
  * Starting state for the toolbar. Images distressed and saved from the
  * preview editor load the persisted editor state (options + the exact
  * pipeline seed of the saved render), so the toolbar matches the
- * persisted image and toggling one effect re-renders the rest
+ * persisted image and moving one slider re-renders the rest
  * identically. Images with a generation trace that recorded distress
  * fall back to the trace's options (seed pinned to the one used at
- * generation). Everything else starts from :const:`CLEAN_OPTIONS` —
- * all flags false, values 0, blank seed. `enabled` stays on so
- * individual effect toggles take effect immediately; untraced
- * documents (toolbar disabled anyway) fall back to
- * :const:`DEFAULT_OPTIONS`.
+ * generation). Options that predate the intensity fields get their
+ * intensities derived from the flags (on -> 1, off -> 0). Everything
+ * else starts from :const:`CLEAN_OPTIONS` — all flags false, values at
+ * their off point, blank seed. `enabled` stays on so individual sliders
+ * take effect immediately; untraced documents (toolbar disabled anyway)
+ * fall back to :const:`DEFAULT_OPTIONS`.
  */
 function initialOptions(doc: DocumentRecord): DistressOptions {
   const saved = savedDistress(doc)
@@ -332,12 +427,12 @@ function initialOptions(doc: DocumentRecord): DistressOptions {
       : typeof trace.seed === "number"
         ? trace.seed
         : null
-  return {
+  return resolveIntensities(o, {
     ...CLEAN_OPTIONS,
     ...o,
     enabled: true,
     seed,
-  }
+  })
 }
 
 /** Fresh non-negative random seed for blank-seed (random) mode. */
@@ -365,10 +460,10 @@ interface DistressToolbarProps {
  * (no trace).
  *
  * Effects are grouped into three collapsible sections (Ink / Paper /
- * Post) mirroring the augraphy pipeline phases; legacy effects fold
- * into their phase. The backend select switches between the augraphy pipeline
- * (default) and the preserved legacy stages; augraphy-only effects are
- * no-ops on the legacy backend and render disabled there.
+ * Post) mirroring the augraphy pipeline phases. Every effect is a
+ * single slider: the effect flag is derived from the slider value
+ * (0 = off; JPEG quality: 95 = off) and the toolbar always renders
+ * with the augraphy backend.
  */
 export function DistressToolbar({
   doc,
@@ -412,8 +507,9 @@ export function DistressToolbar({
   )
   /**
    * Ephemeral seeds for blank-seed (random) mode: regenerated on every
-   * options change so each toggle gives a new random render, and held
-   * stable afterwards so save persists exactly what the preview showed.
+   * options change so each slider move gives a new random render, and
+   * held stable afterwards so save persists exactly what the preview
+   * showed.
    */
   const ephemeralSeedsRef = useRef<{ seed: number; stainSeed: number } | null>(
     null,
@@ -500,7 +596,20 @@ export function DistressToolbar({
     return () => clearTimeout(timer)
   }, [justSaved])
 
-  const legacy = options.backend === "legacy"
+  /** Write a slider value: set the intensity/numeric field and derive the flag. */
+  const applyEffectValue = (e: EffectDef, value: number) => {
+    setOptions((o) => {
+      if (e.intensityKey !== undefined) {
+        return {
+          ...o,
+          [e.intensityKey]: value,
+          [e.key]: value > 0,
+        } as DistressOptions
+      }
+      const flag = e.key === "jpeg_artifacts" ? value < 95 : value > 0
+      return { ...o, [e.valueKey!]: value, [e.key]: flag } as DistressOptions
+    })
+  }
 
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto border-r bg-muted/30 p-3">
@@ -512,40 +621,6 @@ export function DistressToolbar({
         </p>
       )}
       <div className="flex flex-col gap-2">
-        <div className="flex flex-col gap-1">
-          <span
-            className={
-              "text-xs " +
-              (editable ? "text-foreground" : "text-muted-foreground")
-            }
-          >
-            Backend
-          </span>
-          <Select
-            value={options.backend}
-            disabled={!editable}
-            onValueChange={(value) =>
-              setOptions((o) => ({
-                ...o,
-                backend: value as DistressOptions["backend"],
-              }))
-            }
-          >
-            <SelectTrigger className="h-8">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="augraphy">Augraphy</SelectItem>
-              <SelectItem value="legacy">Legacy</SelectItem>
-            </SelectContent>
-          </Select>
-          {legacy && (
-            <p className="text-xs text-muted-foreground">
-              Legacy backend: augraphy-only effects are disabled
-              (no-ops).
-            </p>
-          )}
-        </div>
         <div className="flex flex-col gap-1">
           <span
             className={
@@ -605,78 +680,49 @@ export function DistressToolbar({
               </button>
               {open && (
                 <div className="flex flex-col gap-2 pl-4">
-                  {section.effects.map(({ key, label, augraphyOnly }) => {
-                    const disabled =
-                      !editable || (augraphyOnly !== undefined && legacy)
-                    return (
-                      <label
-                        key={key}
-                        className="flex items-center justify-between gap-2 text-sm"
-                      >
+                  {section.effects.map((e) => (
+                    <div key={e.key} className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between gap-2 text-sm">
                         <span
                           className={
-                            disabled ? "text-muted-foreground" : ""
+                            editable ? "text-foreground" : "text-muted-foreground"
                           }
                         >
-                          {label}
+                          {e.label}
                         </span>
-                        <Switch
-                          checked={Boolean(options[key])}
-                          disabled={disabled}
-                          onCheckedChange={(checked) =>
-                            setOptions((o) => ({ ...o, [key]: checked }))
-                          }
-                        />
-                      </label>
-                    )
-                  })}
-                  {SLIDERS[section.key].map(
-                    ({ key, label, min, max, step, off, fmt }) => (
-                      <div key={key} className="flex flex-col gap-1">
-                        <span
-                          className={
-                            "text-xs " +
-                            (editable && !off(options)
-                              ? "text-foreground"
-                              : "text-muted-foreground")
-                          }
-                        >
-                          {label}: {fmt(Number(options[key]))}
+                        <span className="text-xs text-muted-foreground">
+                          {e.fmt(effectValue(e, options))}
                         </span>
-                        <Slider
-                          value={[Number(options[key])]}
-                          min={min}
-                          max={max}
-                          step={step}
-                          disabled={!editable || off(options)}
-                          onValueChange={(v) =>
-                            setOptions((o) => ({ ...o, [key]: v[0] }))
-                          }
-                        />
                       </div>
-                    ),
+                      <Slider
+                        value={[effectValue(e, options)]}
+                        min={e.min}
+                        max={e.max}
+                        step={e.step}
+                        disabled={!editable}
+                        onValueChange={(v) => applyEffectValue(e, v[0])}
+                      />
+                    </div>
+                  ))}
+                  {section.key === "paper" && options.watermark && (
+                    <div className="flex flex-col gap-1">
+                      <span className="text-xs text-foreground">
+                        Watermark word (empty = random)
+                      </span>
+                      <Input
+                        value={options.watermark_word}
+                        maxLength={40}
+                        placeholder="random"
+                        disabled={!editable}
+                        onChange={(e) =>
+                          setOptions((o) => ({
+                            ...o,
+                            watermark_word: e.target.value,
+                          }))
+                        }
+                      />
+                    </div>
                   )}
-                  {section.key === "paper" &&
-                    options.watermark &&
-                    !legacy && (
-                      <div className="flex flex-col gap-1">
-                        <span className="text-xs text-foreground">
-                          Watermark word (empty = random)
-                        </span>
-                        <Input
-                          value={options.watermark_word}
-                          maxLength={40}
-                          placeholder="random"
-                          disabled={!editable}
-                          onChange={(e) =>
-                            setOptions((o) => ({
-                              ...o,
-                              watermark_word: e.target.value,
-                            }))
-                          }
-                        />
-                      </div>
-                    )}
                 </div>
               )}
             </div>
