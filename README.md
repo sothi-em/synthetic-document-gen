@@ -204,14 +204,16 @@ ratio lets the page size itself to the content.
 Optionally, the PNG is post-processed (**distress**) to look like a scanned,
 aged document. The default **augraphy** backend builds an
 [Augraphy](https://github.com/anchal-agrawel/Augraphy) pipeline from the
-`DistressOptions` toggles: the classic effects (paper aging, vignette,
+`DistressOptions` effects: the classic effects (paper aging, vignette,
 stains, noise, ink fade) map to native augmentations, and ~30 further
-effects are available as per-phase toggles (ink: bleed, bleed-through,
-letterpress, mottling, dithering, dot matrix, low-ink lines, …; paper:
-watermark, noise/brightness texturize, tessellations, paper factory; post:
-bad photo copy, faxify, dirty drum/rollers/screen, shadow cast, moire, JPEG
+effects are available per phase (ink: bleed, bleed-through, letterpress,
+mottling, dithering, dot matrix, low-ink lines, …; paper: watermark,
+noise/brightness texturize, tessellations, paper factory; post: bad photo
+copy, faxify, dirty drum/rollers/screen, shadow cast, moire, JPEG
 artifacts, folding, bindings, markup, scribbles, … — the full list with
-defaults and ranges is in `document_gen/models/distress.py`). A subtle warp
+defaults and ranges is in `document_gen/models/distress.py`). Each effect
+without a dedicated numeric parameter carries a 0-1 intensity that scales
+its augmentation parameters (0 = off). A subtle warp
 and a focus-loss blur have no augraphy equivalent and remain custom OpenCV
 tail stages. The seed drives the whole augraphy pipeline (explicit `--seed`
 or the company seed), so stain positions are reproducible per seed.
@@ -225,13 +227,13 @@ classic defaults (explicit `--distress*` flags win over preset values):
 - `archival` — paper aging, vignette, stains, ink bleed, letterpress, ink mottling, bleed-through, watermark
 
 The pre-augraphy hand-rolled stage sequence is preserved verbatim as the
-**legacy** backend (`--distress-backend legacy`, or the backend select in
-the live editor toolbar): it reproduces old renders exactly (stain
-positions random every run; augraphy-only toggles are no-ops there). The
-augraphy backend is **native-only** — augmentations are used as-is, so
-`paper_aging` (mottled tint) and `vignette` (light-strip gradient) look
-different from the legacy stages, and `ink_fade` currently has no visible
-effect on augraphy 8.2.6; select the legacy backend for the old look.
+**legacy** backend (`--distress-backend legacy`): it reproduces old renders
+exactly (stain positions random every run; augraphy-only effects are
+no-ops there). The augraphy backend is **native-only** — augmentations
+are used as-is, so `paper_aging` (mottled tint) and `vignette`
+(light-strip gradient) look different from the legacy stages, and
+`ink_fade` currently has no visible effect on augraphy 8.2.6; use the
+legacy backend for the old look.
 Augraphy also writes a small LRU cache to `augraphy_cache/` in the working
 directory at runtime (gitignored).
 
@@ -253,7 +255,7 @@ The same output-directory resolution rules as the PDF command apply.
 In the web UI, expand a company's document-type row and click **Generate
 Image** — the dialog mirrors the PDF dialog (no Quick Doc), plus an **A4
 aspect ratio** checkbox (default on) and a **Distress document** checkbox
-that reveals per-effect toggles and strength inputs. Generated PNGs preview
+that reveals per-effect sliders. Generated PNGs preview
 inline in the document view dialog.
 
 **Live distress editing.** When a PNG is generated with tracing on, the
@@ -261,14 +263,13 @@ untouched render is preserved as `<stem>_original.png` next to the document
 (referenced from the trace at
 `gen_tracing.stages.distress.original_path`) — even when distress was
 disabled at generation time. The document view dialog then
-shows a distress toolbar — the augraphy/legacy backend select plus a
-switch per effect (grouped into Ink / Paper / Post sections) and a slider
-or input per strength — that re-renders the stored original server-side on
-every (debounced) change,
-so the preview is exactly what gets persisted. **Save** writes the current
-render over the document file; the original stays untouched, so the image
-remains re-editable (toggling all effects off and saving restores the clean
-render). When no original exists (generated without tracing, or before
+shows a distress toolbar — a slider per effect (grouped into Ink / Paper /
+Post sections; 0 = off, and for JPEG quality 95 = off) that always renders
+with the augraphy backend — that re-renders the stored original
+server-side on every (debounced) change, so the preview is exactly what
+gets persisted. **Save** writes the current render over the document
+file; the original stays untouched, so the image remains re-editable
+(sliding all effects to 0 and saving restores the clean render). When no original exists (generated without tracing, or before
 this feature), the toolbar renders fully disabled with a hint explaining
 why.
 

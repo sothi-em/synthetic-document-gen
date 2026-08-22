@@ -99,7 +99,9 @@ class DistressOptions(BaseModel):
     Each augraphy effect is gated on ``flag and intensity > 0`` and its
     augraphy parameters are scaled by the resolved 0-1 intensity, so an
     explicit 0 turns an on-flagged effect off without changing the
-    boolean.
+    boolean. In the web UI each effect is a single slider that writes the
+    intensity (or the dedicated numeric parameter) and derives the flag
+    from it (0 = off).
     """
 
     enabled: bool = Field(
