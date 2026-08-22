@@ -323,9 +323,10 @@ const INTENSITY_EFFECTS: (keyof DistressOptions)[] = [
   "blur",
 ]
 
-/** Current slider value for an effect. */
+/** Current slider value for an effect (non-finite values read as 0). */
 function effectValue(e: EffectDef, o: DistressOptions): number {
-  return Number(o[e.intensityKey ?? e.valueKey!])
+  const v = Number(o[e.intensityKey ?? e.valueKey!])
+  return Number.isFinite(v) ? v : 0
 }
 
 /** Whether an effect is active (slider above its off value). */
@@ -352,7 +353,7 @@ function resolveIntensities(
   const next: DistressOptions = { ...merged }
   for (const flag of INTENSITY_EFFECTS) {
     const key = `${flag}_intensity` as keyof DistressOptions
-    if (raw[key] === undefined) {
+    if (raw[key] == null) {
       ;(next as unknown as Record<string, unknown>)[key] = merged[flag] ? 1 : 0
     }
   }
