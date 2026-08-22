@@ -107,9 +107,13 @@ def _build_augraphy_pipeline(
 ):
     """Build a fresh augraphy :class:`AugraphyPipeline` from *options*.
 
-    One augmentation is appended per enabled flag (all with ``p=1.0``
-    and fixed conservative ranges, so defaults look like a mildly
-    degraded office document). Phase lists:
+    One augmentation is appended per effect gated on
+    ``flag and intensity > 0``, with each effect's augraphy parameters
+    scaled by its resolved 0-1 intensity (``i``; an explicit 0 turns an
+    on-flagged effect off, and ``i=1`` reproduces the original fixed
+    ranges). Scalable effects scale their strength/count/alpha ranges;
+    non-scalable effects (no continuous parameter) use ``p=i``
+    (deterministic under the pipeline seed). Phase lists:
 
     - ink: ink bleed, bleed-through, letterpress, ink mottling, ink
       color swap, hollow, dithering, dot matrix, low-ink lines
@@ -124,7 +128,8 @@ def _build_augraphy_pipeline(
       scribbles.
 
     ``ink_fade`` is not an augmentation: it lowers the pipeline-level
-    ``overlay_alpha`` (ink-to-paper blend) from 1.0 to 0.85.
+    ``overlay_alpha`` (ink-to-paper blend) from 1.0 toward 0.85 by its
+    intensity.
 
     Args:
         options: Distress options (field values are backend-agnostic).
@@ -143,53 +148,73 @@ def _build_augraphy_pipeline(
 
     _patch_augraphy()
 
+    def _i(name: str) -> float:
+        """Resolved 0-1 intensity for *name* (never None after validation)."""
+        return getattr(options, f"{name}_intensity")
+
     ink_phase = []
-    if options.ink_bleed:
+    if options.ink_bleed and (i := _i("ink_bleed")) > 0:
         ink_phase.append(
-            ag.InkBleed(intensity_range=(0.1, 0.4), kernel_size=(5, 5), p=1.0)
+            ag.InkBleed(intensity_range=(0.1 * i, 0.4 * i), kernel_size=(5, 5), p=1.0)
         )
-    if options.bleed_through:
-        ink_phase.append(ag.BleedThrough(intensity_range=(0.1, 0.4), alpha=0.3, p=1.0))
-    if options.letterpress:
+    if options.bleed_through and (i := _i("bleed_through")) > 0:
+        ink_phase.append(
+            ag.BleedThrough(intensity_range=(0.1 * i, 0.4 * i), alpha=0.3 * i, p=1.0)
+        )
+    if options.letterpress and (i := _i("letterpress")) > 0:
         ink_phase.append(
             ag.Letterpress(
-                n_samples=(20, 60),
-                n_clusters=(20, 60),
+                n_samples=(round(20 * i), round(60 * i)),
+                n_clusters=(round(20 * i), round(60 * i)),
                 std_range=(1500, 5000),
                 value_range=(200, 255),
                 p=1.0,
             )
         )
-    if options.ink_mottling:
-        ink_phase.append(ag.InkMottling(ink_mottling_alpha_range=(0.1, 0.3), p=1.0))
-    if options.ink_color_swap:
-        ink_phase.append(ag.InkColorSwap(ink_swap_color="random", p=1.0))
-    if options.hollow:
-        ink_phase.append(ag.Hollow(hollow_median_kernel_value_range=(71, 101), p=1.0))
-    if options.dithering:
-        ink_phase.append(ag.Dithering(dither="floyd-steinberg", order=(2, 4), p=1.0))
-    if options.dot_matrix:
+    if options.ink_mottling and (i := _i("ink_mottling")) > 0:
+        ink_phase.append(
+            ag.InkMottling(ink_mottling_alpha_range=(0.1 * i, 0.3 * i), p=1.0)
+        )
+    if options.ink_color_swap and (i := _i("ink_color_swap")) > 0:
+        ink_phase.append(ag.InkColorSwap(ink_swap_color="random", p=i))
+    if options.hollow and (i := _i("hollow")) > 0:
+        ink_phase.append(ag.Hollow(hollow_median_kernel_value_range=(71, 101), p=i))
+    if options.dithering and (i := _i("dithering")) > 0:
+        ink_phase.append(ag.Dithering(dither="floyd-steinberg", order=(2, 4), p=i))
+    if options.dot_matrix and (i := _i("dot_matrix")) > 0:
         ink_phase.append(
             ag.DotMatrix(
                 dot_matrix_shape="random",
-                dot_matrix_dot_width_range=(3, 8),
-                dot_matrix_dot_height_range=(3, 8),
+                dot_matrix_dot_width_range=(round(3 * i), round(8 * i)),
+                dot_matrix_dot_height_range=(round(3 * i), round(8 * i)),
                 p=1.0,
             )
         )
-    if options.low_ink_periodic_lines:
+    if options.low_ink_periodic_lines and (i := _i("low_ink_periodic_lines")) > 0:
         ink_phase.append(
-            ag.LowInkPeriodicLines(count_range=(2, 5), period_range=(10, 30), p=1.0)
+            ag.LowInkPeriodicLines(
+                count_range=(round(2 * i), round(5 * i)),
+                period_range=(10, 30),
+                p=1.0,
+            )
         )
-    if options.low_ink_random_lines:
-        ink_phase.append(ag.LowInkRandomLines(count_range=(5, 10), p=1.0))
-    if options.lines_degradation:
-        ink_phase.append(ag.LinesDegradation(line_split_probability=(0.2, 0.4), p=1.0))
+    if options.low_ink_random_lines and (i := _i("low_ink_random_lines")) > 0:
+        ink_phase.append(
+            ag.LowInkRandomLines(count_range=(round(5 * i), round(10 * i)), p=1.0)
+        )
+    if options.lines_degradation and (i := _i("lines_degradation")) > 0:
+        ink_phase.append(
+            ag.LinesDegradation(line_split_probability=(0.2 * i, 0.4 * i), p=1.0)
+        )
 
     paper_phase = []
-    if options.paper_aging:
+    if options.paper_aging and (i := _i("paper_aging")) > 0:
         paper_phase.append(
-            ag.ColorPaper(hue_range=(28, 45), saturation_range=(10, 40), p=1.0)
+            ag.ColorPaper(
+                hue_range=(28, 45),
+                saturation_range=(round(10 * i), round(40 * i)),
+                p=1.0,
+            )
         )
     if options.vignette:
         paper_phase.append(
@@ -210,41 +235,53 @@ def _build_augraphy_pipeline(
                 p=1.0,
             )
         )
-    if options.noise_texturize:
+    if options.noise_texturize and (i := _i("noise_texturize")) > 0:
         paper_phase.append(
-            ag.NoiseTexturize(sigma_range=(3, 10), turbulence_range=(2, 5), p=1.0)
+            ag.NoiseTexturize(
+                sigma_range=(round(3 * i), round(10 * i)),
+                turbulence_range=(round(2 * i), round(5 * i)),
+                p=1.0,
+            )
         )
-    if options.brightness_texturize:
+    if options.brightness_texturize and (i := _i("brightness_texturize")) > 0:
         paper_phase.append(
-            ag.BrightnessTexturize(texturize_range=(0.85, 0.99), deviation=0.08, p=1.0)
+            ag.BrightnessTexturize(
+                texturize_range=(1.0 - 0.15 * i, 0.99), deviation=0.08, p=1.0
+            )
         )
-    if options.watermark:
+    if options.watermark and (i := _i("watermark")) > 0:
         paper_phase.append(
             ag.WaterMark(
                 watermark_word=options.watermark_word or "random",
-                watermark_font_size=(10, 15),
+                watermark_font_size=(round(10 * i), round(15 * i)),
                 watermark_rotation=(0, 360),
                 watermark_method="darken",
                 p=1.0,
             )
         )
-    if options.pattern_generator:
+    if options.pattern_generator and (i := _i("pattern_generator")) > 0:
         paper_phase.append(
-            ag.PatternGenerator(color="random", alpha_range=(0.25, 0.4), p=1.0)
+            ag.PatternGenerator(color="random", alpha_range=(0.25 * i, 0.4 * i), p=1.0)
         )
-    if options.voronoi_tessellation:
+    if options.voronoi_tessellation and (i := _i("voronoi_tessellation")) > 0:
         paper_phase.append(
             ag.VoronoiTessellation(
-                mult_range=(50, 80), num_cells_range=(500, 1000), p=1.0
+                mult_range=(50, 80),
+                num_cells_range=(round(500 * i), round(1000 * i)),
+                p=1.0,
             )
         )
-    if options.delaunay_tessellation:
-        paper_phase.append(ag.DelaunayTessellation(n_points_range=(500, 800), p=1.0))
-    if options.paper_factory:
-        paper_phase.append(ag.PaperFactory(generate_texture=1, p=1.0))
+    if options.delaunay_tessellation and (i := _i("delaunay_tessellation")) > 0:
+        paper_phase.append(
+            ag.DelaunayTessellation(
+                n_points_range=(round(500 * i), round(800 * i)), p=1.0
+            )
+        )
+    if options.paper_factory and (i := _i("paper_factory")) > 0:
+        paper_phase.append(ag.PaperFactory(generate_texture=1, p=i))
 
     post_phase = []
-    if options.bad_photo_copy:
+    if options.bad_photo_copy and (i := _i("bad_photo_copy")) > 0:
         # noise_type=3 (perlin): the default -1 picks randomly from
         # 1-4, and the worley kernel (type 4) crashes numba 0.67's
         # compiler with a bare AssertionError at JIT time in this
@@ -254,8 +291,8 @@ def _build_augraphy_pipeline(
             ag.BadPhotoCopy(
                 noise_type=3,
                 noise_side="random",
-                noise_sparsity=(0.1, 0.4),
-                noise_concentration=(0.1, 0.4),
+                noise_sparsity=(0.1 * i, 0.4 * i),
+                noise_concentration=(0.1 * i, 0.4 * i),
                 p=1.0,
             )
         )
@@ -263,64 +300,77 @@ def _build_augraphy_pipeline(
         post_phase.append(
             ag.SubtleNoise(subtle_range=max(1, int(options.noise_strength)), p=1.0)
         )
-    if options.faxify:
-        post_phase.append(ag.Faxify(scale_range=(1.0, 1.25), p=1.0))
-    if options.dirty_drum:
+    if options.faxify and (i := _i("faxify")) > 0:
+        post_phase.append(ag.Faxify(scale_range=(1.0, 1.0 + 0.25 * i), p=1.0))
+    if options.dirty_drum and (i := _i("dirty_drum")) > 0:
         post_phase.append(
-            ag.DirtyDrum(line_concentration=0.1, line_width_range=(1, 4), p=1.0)
+            ag.DirtyDrum(line_concentration=0.1 * i, line_width_range=(1, 4), p=1.0)
         )
-    if options.dirty_rollers:
-        post_phase.append(ag.DirtyRollers(line_width_range=(8, 12), p=1.0))
-    if options.dirty_screen:
+    if options.dirty_rollers and (i := _i("dirty_rollers")) > 0:
         post_phase.append(
-            ag.DirtyScreen(n_clusters=(50, 100), n_samples=(2, 20), p=1.0)
+            ag.DirtyRollers(line_width_range=(round(8 * i), round(12 * i)), p=1.0)
         )
-    if options.shadow_cast:
+    if options.dirty_screen and (i := _i("dirty_screen")) > 0:
+        post_phase.append(
+            ag.DirtyScreen(
+                n_clusters=(round(50 * i), round(100 * i)),
+                n_samples=(round(2 * i), round(20 * i)),
+                p=1.0,
+            )
+        )
+    if options.shadow_cast and (i := _i("shadow_cast")) > 0:
         post_phase.append(
             ag.ShadowCast(
                 shadow_side="random",
-                shadow_opacity_range=(0.2, 0.5),
+                shadow_opacity_range=(0.2 * i, 0.5 * i),
                 shadow_blur_kernel_range=(101, 201),
                 p=1.0,
             )
         )
-    if options.lens_flare:
+    if options.lens_flare and (i := _i("lens_flare")) > 0:
         post_phase.append(
-            ag.LensFlare(lens_flare_location="random", lens_flare_size=(0.5, 3), p=1.0)
+            ag.LensFlare(
+                lens_flare_location="random", lens_flare_size=(0.5 * i, 3 * i), p=1.0
+            )
         )
-    if options.reflected_light:
+    if options.reflected_light and (i := _i("reflected_light")) > 0:
         post_phase.append(
             ag.ReflectedLight(
-                reflected_light_internal_max_brightness_range=(0.9, 1.0), p=1.0
+                reflected_light_internal_max_brightness_range=(1.0 - 0.1 * i, 1.0),
+                p=1.0,
             )
         )
-    if options.brightness:
-        post_phase.append(ag.Brightness(brightness_range=(0.9, 1.1), p=1.0))
-    if options.gamma:
-        post_phase.append(ag.Gamma(gamma_range=(0.8, 1.2), p=1.0))
-    if options.color_shift:
+    if options.brightness and (i := _i("brightness")) > 0:
+        post_phase.append(
+            ag.Brightness(brightness_range=(1.0 - 0.1 * i, 1.0 + 0.1 * i), p=1.0)
+        )
+    if options.gamma and (i := _i("gamma")) > 0:
+        post_phase.append(ag.Gamma(gamma_range=(1.0 - 0.2 * i, 1.0 + 0.2 * i), p=1.0))
+    if options.color_shift and (i := _i("color_shift")) > 0:
         post_phase.append(
             ag.ColorShift(
-                color_shift_offset_x_range=(3, 5),
-                color_shift_offset_y_range=(3, 5),
+                color_shift_offset_x_range=(round(3 * i), round(5 * i)),
+                color_shift_offset_y_range=(round(3 * i), round(5 * i)),
                 p=1.0,
             )
         )
-    if options.depth_blur:
+    if options.depth_blur and (i := _i("depth_blur")) > 0:
         post_phase.append(
             ag.DepthSimulatedBlur(
-                blur_major_axes_length_range=(120, 200),
-                blur_minor_axes_length_range=(120, 200),
+                blur_major_axes_length_range=(round(120 * i), round(200 * i)),
+                blur_minor_axes_length_range=(round(120 * i), round(200 * i)),
                 p=1.0,
             )
         )
-    if options.moire:
+    if options.moire and (i := _i("moire")) > 0:
         post_phase.append(
-            ag.Moire(moire_density=(15, 20), moire_blend_alpha=0.1, p=1.0)
+            ag.Moire(moire_density=(15, 20), moire_blend_alpha=0.1 * i, p=1.0)
         )
-    if options.lcd_pattern:
+    if options.lcd_pattern and (i := _i("lcd_pattern")) > 0:
         post_phase.append(
-            ag.LCDScreenPattern(pattern_type="random", pattern_overlay_alpha=0.3, p=1.0)
+            ag.LCDScreenPattern(
+                pattern_type="random", pattern_overlay_alpha=0.3 * i, p=1.0
+            )
         )
     if options.jpeg_artifacts:
         post_phase.append(
@@ -332,32 +382,42 @@ def _build_augraphy_pipeline(
                 p=1.0,
             )
         )
-    if options.double_exposure:
+    if options.double_exposure and (i := _i("double_exposure")) > 0:
         post_phase.append(
             ag.DoubleExposure(
-                gaussian_kernel_range=(9, 12), offset_range=(18, 25), p=1.0
+                gaussian_kernel_range=(9, 12),
+                offset_range=(round(18 * i), round(25 * i)),
+                p=1.0,
             )
         )
     if options.folding:
         post_phase.append(
             ag.Folding(fold_count=options.fold_count, fold_angle_range=(0, 0), p=1.0)
         )
-    if options.bindings:
+    if options.bindings and (i := _i("bindings")) > 0:
         post_phase.append(
             ag.BindingsAndFasteners(
                 overlay_types="random",
                 ntimes=(2, 4),
                 use_figshare_library=0,
+                p=i,
+            )
+        )
+    if options.markup and (i := _i("markup")) > 0:
+        post_phase.append(
+            ag.Markup(
+                num_lines_range=(round(2 * i), round(5 * i)),
+                markup_type="random",
                 p=1.0,
             )
         )
-    if options.markup:
+    if options.scribbles and (i := _i("scribbles")) > 0:
         post_phase.append(
-            ag.Markup(num_lines_range=(2, 5), markup_type="random", p=1.0)
-        )
-    if options.scribbles:
-        post_phase.append(
-            ag.Scribbles(scribbles_type="random", scribbles_count_range=(1, 4), p=1.0)
+            ag.Scribbles(
+                scribbles_type="random",
+                scribbles_count_range=(round(1 * i), round(4 * i)),
+                p=1.0,
+            )
         )
 
     if not (ink_phase or paper_phase or post_phase):
@@ -368,11 +428,15 @@ def _build_augraphy_pipeline(
     random_seed = (
         zlib.crc32(f"{seed}:{stain_seed}".encode()) if stain_seed is not None else seed
     ) & 0x7FFFFFFF
+    # ink_fade lowers the pipeline-level overlay alpha (i=1 -> 0.85, the
+    # original faded-ink blend).
+    fade = options.ink_fade_intensity if options.ink_fade else 0.0
+    overlay_alpha = 1.0 - 0.15 * fade if fade > 0 else 1.0
     return ag.AugraphyPipeline(
         ink_phase=ink_phase,
         paper_phase=paper_phase,
         post_phase=post_phase,
-        overlay_alpha=0.85 if options.ink_fade else 1.0,
+        overlay_alpha=overlay_alpha,
         random_seed=random_seed,
     )
 
@@ -400,8 +464,9 @@ def distress_array(
       are ignored.
 
     Both backends finish with the same custom tail stages, which have no
-    augraphy equivalent: warp (low-frequency remap) then blur (3x3
-    Gaussian), each gated by its flag.
+    augraphy equivalent: warp (low-frequency remap, magnitude from
+    ``warp_strength``) then blur (Gaussian kernel sized by the blur
+    intensity), each gated by its flag and intensity.
 
     Args:
         clean: Normalized 3-channel BGR source image (uint8).
@@ -474,11 +539,15 @@ def distress_array(
             out, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
         )
 
-    # Blur: scanner focus loss.
+    # Blur: scanner focus loss. Kernel size scales with the resolved
+    # blur intensity (3/5/7/9 at i ~ 0.1/0.35/0.7/1.0); 0 = no-op.
     if options.blur:
         import cv2
 
-        out = cv2.GaussianBlur(out, (3, 3), 0)
+        i = options.blur_intensity
+        if i > 0:
+            k = 3 + 2 * round(3 * i)
+            out = cv2.GaussianBlur(out, (k, k), 0)
 
     return out
 

@@ -172,6 +172,7 @@ class TestDistressImage:
                 stains=False,
                 vignette=False,
                 noise=False,
+                blur=False,
             ),
             seed=42,
         )
@@ -431,7 +432,9 @@ class TestAugraphyBackend:
         # The ink_to_paper overlay must keep the document content dark
         # over the tinted paper.
         clean = _clean_image()
-        opts = _options(paper_aging=True, vignette=False, stains=False, noise=False)
+        opts = _options(
+            paper_aging=True, vignette=False, stains=False, noise=False, blur=False
+        )
         out = distress_array(clean, opts, seed=42)
         ink_mask = cv2.cvtColor(clean, cv2.COLOR_BGR2GRAY) < 128
         assert ink_mask.any()
@@ -628,6 +631,155 @@ class TestAugraphySmoke:
         clean = _clean_image()
         out = ag.Markup(markup_ink="highlighter", markup_type="highlight", p=1.0)(clean)
         assert out.shape == clean.shape and out.dtype == np.uint8
+
+
+# ---------------------------------------------------------------------------
+# Per-effect intensity scaling (augraphy backend)
+# ---------------------------------------------------------------------------
+
+
+class TestIntensityScaling:
+    """Intensity semantics: 0 = off, 1.0 = original look, mid scales."""
+
+    def _single(
+        self, toggle: str, intensity: float | None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Run *toggle* alone at *intensity* (None = flag-only payload)."""
+        clean = _clean_image()
+        overrides: dict = {toggle: True}
+        if intensity is not None:
+            overrides[f"{toggle}_intensity"] = intensity
+        opts = _options(
+            paper_aging=False,
+            vignette=False,
+            stains=False,
+            noise=False,
+            ink_fade=False,
+            blur=False,
+            warp=False,
+            **overrides,
+        )
+        return clean, distress_array(clean, opts, seed=42)
+
+    def test_ink_bleed_zero_intensity_is_noop(self) -> None:
+        clean, out = self._single("ink_bleed", 0.0)
+        assert np.array_equal(out, clean)
+
+    @pytest.mark.slow
+    def test_shadow_cast_zero_intensity_is_noop(self) -> None:
+        clean, out = self._single("shadow_cast", 0.0)
+        assert np.array_equal(out, clean)
+
+    def test_full_zero_intensity_is_noop(self) -> None:
+        # Flags on but intensities 0: nothing may be applied.
+        clean = _clean_image()
+        opts = DistressOptions(
+            enabled=True,
+            seed=42,
+            paper_aging=True,
+            vignette=False,
+            stains=False,
+            noise=False,
+            ink_fade=True,
+            blur=True,
+            ink_bleed=True,
+            shadow_cast=True,
+            paper_aging_intensity=0.0,
+            ink_fade_intensity=0.0,
+            blur_intensity=0.0,
+            ink_bleed_intensity=0.0,
+            shadow_cast_intensity=0.0,
+        )
+        out = distress_array(clean, opts, seed=42)
+        assert np.array_equal(out, clean)
+
+    @pytest.mark.slow
+    def test_full_intensity_one_matches_flag_only_payload(self) -> None:
+        # Explicit 1.0 everywhere must be byte-identical to a
+        # pre-intensity (flags-only) payload: the i=1 mapping is exact.
+        clean = _clean_image()
+        flag_only = DistressOptions(
+            enabled=True,
+            seed=42,
+            paper_aging=True,
+            vignette=True,
+            stains=True,
+            stain_count=4,
+            noise=True,
+            ink_fade=True,
+            blur=True,
+            ink_bleed=True,
+            shadow_cast=True,
+        )
+        explicit = flag_only.model_copy(
+            update={
+                f"{name}_intensity": 1.0
+                for name in (
+                    "paper_aging",
+                    "ink_fade",
+                    "blur",
+                    "ink_bleed",
+                    "shadow_cast",
+                )
+            }
+        )
+        out1 = distress_array(clean, flag_only, seed=42, stain_seed=7)
+        out2 = distress_array(clean, explicit, seed=42, stain_seed=7)
+        assert np.array_equal(out1, out2)
+
+    @pytest.mark.parametrize("toggle", ["ink_bleed", "letterpress"])
+    def test_intensity_one_matches_flag_only(self, toggle: str) -> None:
+        # i=1 reproduces the original (pre-intensity) wiring for effects
+        # whose i=1 mapping is exact.
+        _, out_explicit = self._single(toggle, 1.0)
+        _, out_flag_only = self._single(toggle, None)
+        assert np.array_equal(out_explicit, out_flag_only)
+
+    @pytest.mark.slow
+    def test_shadow_cast_intensity_one_matches_flag_only(self) -> None:
+        _, out_explicit = self._single("shadow_cast", 1.0)
+        _, out_flag_only = self._single("shadow_cast", None)
+        assert np.array_equal(out_explicit, out_flag_only)
+
+    def test_mid_intensity_changes_image_keeps_shape(self) -> None:
+        clean, out_half = self._single("ink_bleed", 0.5)
+        _, out_full = self._single("ink_bleed", 1.0)
+        assert out_half.shape == clean.shape
+        assert out_half.dtype == np.uint8
+        assert not np.array_equal(out_half, clean)
+        assert not np.array_equal(out_half, out_full)
+
+    def test_blur_zero_intensity_is_noop(self) -> None:
+        clean = _clean_image()
+        opts = _options(
+            paper_aging=False,
+            vignette=False,
+            stains=False,
+            noise=False,
+            ink_fade=False,
+            blur=True,
+            blur_intensity=0.0,
+        )
+        out = distress_array(clean, opts, seed=42)
+        assert np.array_equal(out, clean)
+
+    def test_blur_full_intensity_blurs(self) -> None:
+        clean = _clean_image()
+        opts = _options(
+            paper_aging=False,
+            vignette=False,
+            stains=False,
+            noise=False,
+            ink_fade=False,
+            blur=True,
+            blur_intensity=1.0,
+        )
+        out = distress_array(clean, opts, seed=42)
+        assert out.shape == clean.shape
+        assert not np.array_equal(out, clean)
+        # The i=1 kernel (9x9) blurs at least as much as the old 3x3.
+        grad = lambda a: np.abs(np.diff(a, axis=1)).mean()  # noqa: E731
+        assert grad(out.astype(np.float32)) < grad(clean.astype(np.float32))
 
 
 # ---------------------------------------------------------------------------
