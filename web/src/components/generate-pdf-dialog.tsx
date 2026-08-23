@@ -48,6 +48,8 @@ interface GeneratePdfDialogProps {
   company: CompanySummary
   docType: DocumentTypeDoc
   models: string[]
+  /** Called once when the generation job finishes successfully. */
+  onGenerated?: () => void
 }
 
 /**
@@ -61,6 +63,7 @@ export function GeneratePdfDialog({
   company,
   docType,
   models,
+  onGenerated,
 }: GeneratePdfDialogProps) {
   const [userInput, setUserInput] = useState("")
   const [model, setModel] = useState("")
@@ -114,7 +117,7 @@ export function GeneratePdfDialog({
         quick_doc: quickDoc,
         gen_tracing: genTrace,
       })
-      start(job.id, 1, () => {})
+      start(job.id, 1, () => onGenerated?.())
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error))
     }

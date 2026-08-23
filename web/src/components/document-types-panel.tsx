@@ -274,6 +274,11 @@ export function DocumentTypesPanel({
     }
   }, [])
 
+  /** Reload the selected company's types (keeps the count pills fresh after a document is generated). */
+  const refreshSelectedTypes = useCallback(() => {
+    if (selected) void loadDocumentTypes(selected.id)
+  }, [selected, loadDocumentTypes])
+
   const confirmDeleteType = useCallback(async () => {
     if (!deletingType || !selected) return
     setDeleting(true)
@@ -818,6 +823,7 @@ export function DocumentTypesPanel({
           company={selected}
           docType={pdfTarget}
           models={models}
+          onGenerated={refreshSelectedTypes}
         />
       )}
       {selected && excelTarget && (
@@ -829,6 +835,7 @@ export function DocumentTypesPanel({
           company={selected}
           docType={excelTarget}
           models={models}
+          onGenerated={refreshSelectedTypes}
         />
       )}
       {selected && imageTarget && (
@@ -840,6 +847,7 @@ export function DocumentTypesPanel({
           company={selected}
           docType={imageTarget}
           models={models}
+          onGenerated={refreshSelectedTypes}
         />
       )}
     </Card>

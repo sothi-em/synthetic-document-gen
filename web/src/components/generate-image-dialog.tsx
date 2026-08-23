@@ -48,6 +48,8 @@ interface GenerateImageDialogProps {
   company: CompanySummary
   docType: DocumentTypeDoc
   models: string[]
+  /** Called once when the generation job finishes successfully. */
+  onGenerated?: () => void
 }
 
 /**
@@ -63,6 +65,7 @@ export function GenerateImageDialog({
   company,
   docType,
   models,
+  onGenerated,
 }: GenerateImageDialogProps) {
   const [userInput, setUserInput] = useState("")
   const [model, setModel] = useState("")
@@ -119,7 +122,7 @@ export function GenerateImageDialog({
         // editor (all settings off by default).
         gen_tracing: genTrace,
       })
-      start(job.id, 1, () => {})
+      start(job.id, 1, () => onGenerated?.())
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error))
     }
