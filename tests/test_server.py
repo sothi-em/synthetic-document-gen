@@ -1431,6 +1431,9 @@ class TestDocuments:
         assert response.headers["content-disposition"] == (
             'inline; filename="acme_report.pdf"'
         )
+        # Previews must never be cached: the file can be rewritten in
+        # place (distress save) and a stale cached copy would hide it.
+        assert response.headers["cache-control"] == "no-store"
 
     def test_preview_errors(self, client, company_db, tmp_path) -> None:
         assert client.get("/api/documents/999999/preview").status_code == 404

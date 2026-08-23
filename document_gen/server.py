@@ -1434,7 +1434,12 @@ def preview_document(doc_id: int) -> FileResponse:
     media_type = mimetypes.guess_type(record["filename"])[0] or (
         "application/octet-stream"
     )
-    headers = {"Content-Disposition": f'inline; filename="{record["filename"]}"'}
+    headers = {
+        "Content-Disposition": f'inline; filename="{record["filename"]}"',
+        # The file can be rewritten in place (e.g. a distress save), so
+        # the browser must never serve a cached copy of a stale render.
+        "Cache-Control": "no-store",
+    }
     return FileResponse(path, media_type=media_type, headers=headers)
 
 
