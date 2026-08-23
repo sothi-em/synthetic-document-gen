@@ -49,8 +49,8 @@ The following are planned but not yet implemented:
 3. **Image generation** — generate logos and other document imagery.
 4. **LLM-assisted document tweak/regenerate** — iteratively refine or
    regenerate individual documents with model assistance.
-5. **Other file formats** — support additional output formats beyond PDF and
-   PNG.
+5. **Other file formats** — support additional output formats beyond PDF,
+   PNG, and Excel.
 
 ## Workflow
 
@@ -65,8 +65,9 @@ The following are planned but not yet implemented:
    [PDF document generation](#pdf-document-generation)).
 4. **PNG image document generation** — same pipeline shape as the PDF
    pipeline, but rendered to a single PNG page (A4 portrait or content-sized),
-   optionally post-processed with OpenCV to look like a scanned, aged
-   document (see [PNG image document generation](#png-image-document-generation)).
+   optionally post-processed with the distress pass (Augraphy + OpenCV) to
+   look like a scanned, aged document (see
+   [PNG image document generation](#png-image-document-generation)).
 
 ## Setup
 
@@ -198,8 +199,8 @@ an interactive directory browser that navigates the server's filesystem.
 Renders one of a company's document types into a **single-page PNG image**.
 The pipeline mirrors the PDF pipeline (plan → markdown → figures →
 HTML+CSS), but the HTML is constrained to one page and rendered to PNG with
-WeasyPrint. The page is A4 portrait by default; unchecking the A4 aspect
-ratio lets the page size itself to the content.
+WeasyPrint at 192 DPI. The page is A4 portrait by default; unchecking the A4
+aspect ratio lets the page size itself to the content.
 
 Optionally, the PNG is post-processed (**distress**) to look like a scanned,
 aged document. The default **augraphy** backend builds an
@@ -254,9 +255,9 @@ The same output-directory resolution rules as the PDF command apply.
 
 In the web UI, expand a company's document-type row and click **Generate
 Image** — the dialog mirrors the PDF dialog (no Quick Doc), plus an **A4
-aspect ratio** checkbox (default on) and a **Distress document** checkbox
-that reveals per-effect sliders. Generated PNGs preview
-inline in the document view dialog.
+aspect ratio** checkbox (default on). Generated images are left as clean,
+undistressed renders; distress is applied afterwards in the live editor
+below. Generated PNGs preview inline in the document view dialog.
 
 **Live distress editing.** When a PNG is generated with tracing on, the
 untouched render is preserved as `<stem>_original.png` next to the document
@@ -267,11 +268,24 @@ shows a distress toolbar — a slider per effect (grouped into Ink / Paper /
 Post sections; 0 = off, and for JPEG quality 95 = off) that always renders
 with the augraphy backend — that re-renders the stored original
 server-side on every (debounced) change, so the preview is exactly what
-gets persisted. **Save** writes the current render over the document
-file; the original stays untouched, so the image remains re-editable
-(sliding all effects to 0 and saving restores the clean render). When no original exists (generated without tracing, or before
-this feature), the toolbar renders fully disabled with a hint explaining
-why.
+gets persisted. The toolbar also offers:
+
+- a **seed** input (blank = a fresh random seed per edit, so each slider
+  move gives a new random render; entering a seed makes renders
+  deterministic),
+- a **Randomize** button — picks a clean baseline with a random subset of
+  3–6 effects (across all sections) at random, clearly-visible severities,
+  keeping the current seed choice,
+- a **Reset** button — back to the clean render (all effects off).
+
+**Save** writes the current render over the document file *and* persists
+the editor state (effect options plus the exact pipeline and stain seeds of
+the saved render); reopening the preview reloads that state, so the toolbar
+matches the persisted image and re-renders reproduce it exactly. The
+original stays untouched, so the image remains re-editable (resetting all
+effects and saving restores the clean render). When no original exists
+(generated without tracing, or before this feature), the toolbar renders
+fully disabled with a hint explaining why.
 
 ### Web UI
 
@@ -301,8 +315,8 @@ pnpm dev                     # http://localhost:5173 (uv run document-gen serve 
 
 - **Generate** tab — start a background job (count, optional instructions, industry, model) with live progress; review the generated companies and pick which ones to keep (work is split across a fixed pool of 4 threads).
 - **Companies** tab — browse/search the company store with a detail view.
-- **Document types** tab — browse a company's document types and generate PDFs and PNG images.
-- **Documents** tab — browse every generated file.
+- **Document types** tab — browse a company's document types and generate PDFs, Excel workbooks, and PNG images.
+- **Documents** tab — browse every generated file; PNG documents open in a view dialog with the live distress editor (see [PNG image document generation](#png-image-document-generation)).
 - **Labels** tab — placeholder for the ChromaDB label tools.
 
 Key API endpoints: `GET /api/health`, `GET /api/models`, `GET /api/industries`,
@@ -312,8 +326,13 @@ Key API endpoints: `GET /api/health`, `GET /api/models`, `GET /api/industries`,
 `POST /api/companies/{id}/document-types/generate`, `GET|PUT|DELETE /api/settings`,
 `POST /api/settings/test`, `GET|PUT|DELETE /api/settings/documents`,
 `GET /api/fs/browse`, `POST /api/companies/{id}/pdf`,
-`GET /api/companies/{id}/pdf/{filename}`, `POST /api/companies/{id}/image`,
-`GET /api/companies/{id}/image/{filename}`. Interactive docs at `/docs`.
+`GET /api/companies/{id}/pdf/{filename}`, `POST /api/companies/{id}/excel`,
+`GET /api/companies/{id}/excel/{filename}`, `POST /api/companies/{id}/image`,
+`GET /api/companies/{id}/image/{filename}`, `GET /api/documents`,
+`GET /api/documents/{doc_id}/preview`, `GET /api/documents/{doc_id}/download`,
+`DELETE /api/documents/{doc_id}`,
+`POST /api/documents/{doc_id}/image/distress-preview`,
+`POST /api/documents/{doc_id}/image/distress-save`. Interactive docs at `/docs`.
 
 ### Data labels (ChromaDB)
 
