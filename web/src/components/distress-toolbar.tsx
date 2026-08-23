@@ -3,6 +3,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Dices,
   LoaderCircle,
   RotateCcw,
   Save,
@@ -441,6 +442,57 @@ function randomSeed(): number {
   return Math.floor(Math.random() * 0x7fffffff)
 }
 
+/**
+ * Narrowed random ranges for effects whose full slider range would
+ * produce extreme or useless results (overrides the slider min/max).
+ */
+const RANDOM_RANGES: Partial<Record<keyof DistressOptions, [number, number]>> = {
+  stains: [1, 10],
+  noise: [5, 30],
+  vignette: [0.1, 0.8],
+  warp: [0.1, 0.8],
+  jpeg_artifacts: [10, 60],
+  folding: [1, 3],
+}
+
+/** Random value for an effect, snapped to its step, in a sane range. */
+function randomEffectValue(e: EffectDef): number {
+  let [lo, hi] = RANDOM_RANGES[e.key] ?? [e.min + e.step, e.max]
+  // 0-1 intensity effects stay clearly visible (above 0.2).
+  if (e.intensityKey !== undefined) lo = Math.max(lo, 0.2)
+  const raw = lo + Math.random() * (hi - lo)
+  const snapped = Math.round(raw / e.step) * e.step
+  return Math.min(hi, Math.max(lo, Number(snapped.toFixed(4))))
+}
+
+/**
+ * Fresh random options: a clean baseline with a random subset of 3-6
+ * effects (across all sections) at random severities. The caller's
+ * seed choice (pinned or blank/random) is preserved.
+ */
+function randomizeOptions(seed: number | null): DistressOptions {
+  const pool = [...INK_EFFECTS, ...PAPER_EFFECTS, ...POST_EFFECTS]
+  // Fisher-Yates shuffle, take the first 3-6.
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[pool[i], pool[j]] = [pool[j], pool[i]]
+  }
+  const picked = pool.slice(0, 3 + Math.floor(Math.random() * 4))
+  const next: DistressOptions = { ...CLEAN_OPTIONS, enabled: true, seed }
+  const rec = next as unknown as Record<string, unknown>
+  for (const e of picked) {
+    const value = randomEffectValue(e)
+    if (e.intensityKey !== undefined) {
+      rec[e.intensityKey] = value
+      rec[e.key] = value > 0
+    } else {
+      rec[e.valueKey!] = value
+      rec[e.key] = e.key === "jpeg_artifacts" ? value < 95 : value > 0
+    }
+  }
+  return next
+}
+
 interface DistressToolbarProps {
   doc: DocumentRecord
   /** Called with a freshly rendered preview (server-side re-distress). */
@@ -751,6 +803,15 @@ export function DistressToolbar({
             </Button>
           </span>
         )}
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!editable || busy}
+          onClick={() => setOptions(randomizeOptions(options.seed))}
+        >
+          <Dices />
+          Randomize
+        </Button>
         <Button
           variant="outline"
           size="sm"
