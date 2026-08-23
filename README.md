@@ -265,7 +265,7 @@ untouched render is preserved as `<stem>_original.png` next to the document
 `gen_tracing.stages.distress.original_path`) — even when distress was
 disabled at generation time. The document view dialog then
 shows a distress toolbar — a slider per effect (grouped into Ink / Paper /
-Post sections; 0 = off, and for JPEG quality 95 = off) that always renders
+Post sections; 0 = off, and for JPEG quality 100 = off) that always renders
 with the augraphy backend — that re-renders the stored original
 server-side on every (debounced) change, so the preview is exactly what
 gets persisted. The toolbar also offers:

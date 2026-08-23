@@ -238,7 +238,7 @@ export interface DistressOptions {
   lcd_pattern: boolean
   lcd_pattern_intensity: number
   jpeg_artifacts: boolean
-  /** Target JPEG quality for the artifacts (10-95; 95 = off). */
+  /** Target JPEG quality for the artifacts (10-100; 100 = off). */
   jpeg_quality: number
   double_exposure: boolean
   double_exposure_intensity: number

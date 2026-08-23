@@ -26,7 +26,10 @@ import { Slider } from "@/components/ui/slider"
  * Defaults mirroring `document_gen.models.distress.DistressOptions`
  * (with `enabled` on; intensities resolved from the flags, as the
  * backend does). Used only when the document has no generation trace
- * at all, in which case the toolbar is disabled anyway.
+ * at all, in which case the toolbar is disabled anyway. Kept so the
+ * backend defaults stay documented in one place; the disabled toolbar
+ * shows the clean baseline instead (see `initialOptions`), so no
+ * effect counters appear for images that were never distressed.
  */
 const DEFAULT_OPTIONS: DistressOptions = {
   enabled: true,
@@ -112,7 +115,7 @@ const DEFAULT_OPTIONS: DistressOptions = {
   lcd_pattern: false,
   lcd_pattern_intensity: 0,
   jpeg_artifacts: false,
-  jpeg_quality: 50,
+  jpeg_quality: 100,
   double_exposure: false,
   double_exposure_intensity: 0,
   folding: false,
@@ -148,7 +151,7 @@ const CLEAN_OPTIONS: DistressOptions = {
   warp: false,
   warp_strength: 0,
   watermark_word: "",
-  jpeg_quality: 95,
+  jpeg_quality: 100,
   fold_count: 1,
 }
 
@@ -261,8 +264,8 @@ const POST_EFFECTS: EffectDef[] = [
     "JPEG quality",
     "jpeg_quality",
     10,
-    95,
-    1,
+    100,
+    5,
     (v) => String(v),
   ),
   intensityEffect("double_exposure", "Double exposure"),
@@ -332,7 +335,7 @@ function effectValue(e: EffectDef, o: DistressOptions): number {
 
 /** Whether an effect is active (slider above its off value). */
 function isActive(e: EffectDef, o: DistressOptions): boolean {
-  if (e.key === "jpeg_artifacts") return o.jpeg_quality < 95
+  if (e.key === "jpeg_artifacts") return o.jpeg_quality < 100
   return effectValue(e, o) > 0
 }
 
@@ -408,14 +411,28 @@ function savedDistress(
  * intensities derived from the flags (on -> 1, off -> 0). Everything
  * else starts from :const:`CLEAN_OPTIONS` — all flags false, values at
  * their off point, blank seed. `enabled` stays on so individual sliders
- * take effect immediately; untraced documents (toolbar disabled anyway)
- * fall back to :const:`DEFAULT_OPTIONS`.
+ * take effect immediately. Untraced documents (toolbar disabled anyway)
+ * also start from the clean baseline, so no effect counters appear for
+ * images that were never distressed.
  */
+/**
+ * Legacy normalization: renders saved before the JPEG off-point moved to
+ * 100 carry the effect off at a lower quality (e.g. 95); snap them to the
+ * off-point so the slider matches the (inactive) effect.
+ */
+function normalizeJpegOff(o: DistressOptions): DistressOptions {
+  if (!o.jpeg_artifacts && o.jpeg_quality < 100) {
+    return { ...o, jpeg_quality: 100 }
+  }
+  return o
+}
+
 function initialOptions(doc: DocumentRecord): DistressOptions {
   const saved = savedDistress(doc)
-  if (saved !== null) return { ...saved.options, seed: saved.seed }
+  if (saved !== null)
+    return normalizeJpegOff({ ...saved.options, seed: saved.seed })
   const trace = distressTrace(doc)
-  if (trace === null) return DEFAULT_OPTIONS
+  if (trace === null) return { ...CLEAN_OPTIONS, enabled: true }
   const enabled = typeof trace.enabled === "boolean" ? trace.enabled : false
   if (!enabled) return { ...CLEAN_OPTIONS, enabled: true }
   const raw = trace.options
@@ -429,12 +446,14 @@ function initialOptions(doc: DocumentRecord): DistressOptions {
       : typeof trace.seed === "number"
         ? trace.seed
         : null
-  return resolveIntensities(o, {
-    ...CLEAN_OPTIONS,
-    ...o,
-    enabled: true,
-    seed,
-  })
+  return normalizeJpegOff(
+    resolveIntensities(o, {
+      ...CLEAN_OPTIONS,
+      ...o,
+      enabled: true,
+      seed,
+    }),
+  )
 }
 
 /** Fresh non-negative random seed for blank-seed (random) mode. */
@@ -487,7 +506,7 @@ function randomizeOptions(seed: number | null): DistressOptions {
       rec[e.key] = value > 0
     } else {
       rec[e.valueKey!] = value
-      rec[e.key] = e.key === "jpeg_artifacts" ? value < 95 : value > 0
+      rec[e.key] = e.key === "jpeg_artifacts" ? value < 100 : value > 0
     }
   }
   return next
@@ -515,7 +534,7 @@ interface DistressToolbarProps {
  * Effects are grouped into three collapsible sections (Ink / Paper /
  * Post) mirroring the augraphy pipeline phases. Every effect is a
  * single slider: the effect flag is derived from the slider value
- * (0 = off; JPEG quality: 95 = off) and the toolbar always renders
+ * (0 = off; JPEG quality: 100 = off) and the toolbar always renders
  * with the augraphy backend.
  */
 export function DistressToolbar({
@@ -528,16 +547,10 @@ export function DistressToolbar({
   const [options, setOptions] = useState<DistressOptions>(() =>
     initialOptions(doc),
   )
-  const [openSections, setOpenSections] = useState<
-    Record<SectionKey, boolean>
-  >(() => {
-    const o = initialOptions(doc)
-    return {
-      ink: activeCount(INK_EFFECTS, o) > 0,
-      paper: activeCount(PAPER_EFFECTS, o) > 0,
-      post: activeCount(POST_EFFECTS, o) > 0,
-    }
-  })
+  /** Effect sections start collapsed; the active-effect badges still show counts. */
+  const [openSections, setOpenSections] = useState<Record<SectionKey, boolean>>(
+    () => ({ ink: false, paper: false, post: false }),
+  )
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [justSaved, setJustSaved] = useState(false)
@@ -659,7 +672,7 @@ export function DistressToolbar({
           [e.key]: value > 0,
         } as DistressOptions
       }
-      const flag = e.key === "jpeg_artifacts" ? value < 95 : value > 0
+      const flag = e.key === "jpeg_artifacts" ? value < 100 : value > 0
       return { ...o, [e.valueKey!]: value, [e.key]: flag } as DistressOptions
     })
   }

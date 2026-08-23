@@ -295,8 +295,8 @@ class DistressOptions(BaseModel):
         description="JPEG recompression artifacts.", default=False
     )
     jpeg_quality: int = Field(
-        description="Target JPEG quality for the artifacts (10-95).",
-        default=50,
+        description="Target JPEG quality for the artifacts (10-100; 100 = off).",
+        default=100,
     )
     double_exposure: bool = Field(description="Ghosted double exposure.", default=False)
     double_exposure_intensity: float | None = _intensity_field()
@@ -338,8 +338,8 @@ class DistressOptions(BaseModel):
     @field_validator("jpeg_quality")
     @classmethod
     def _clamp_jpeg_quality(cls, value: int) -> int:
-        """Clamp JPEG quality into 10-95."""
-        return min(max(value, 10), 95)
+        """Clamp JPEG quality into 10-100."""
+        return min(max(value, 10), 100)
 
     @field_validator("fold_count")
     @classmethod
@@ -364,4 +364,9 @@ class DistressOptions(BaseModel):
         for name in _INTENSITY_EFFECTS:
             if getattr(self, f"{name}_intensity") is None:
                 setattr(self, f"{name}_intensity", 1.0 if getattr(self, name) else 0.0)
+        # Quality 100 is the off point for the JPEG artifacts effect
+        # (a quality-100 round-trip is still lossy, but close enough to
+        # the clean render that it doubles as "no effect").
+        if self.jpeg_quality >= 100:
+            self.jpeg_artifacts = False
         return self

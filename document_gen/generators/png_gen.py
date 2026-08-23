@@ -372,7 +372,10 @@ def _build_augraphy_pipeline(
                 pattern_type="random", pattern_overlay_alpha=0.3 * i, p=1.0
             )
         )
-    if options.jpeg_artifacts:
+    # Quality 100 is the off point: the round-trip would be near-
+    # invisible, so skip the stage (also covers unvalidated copies where
+    # the model validator did not clear the flag).
+    if options.jpeg_artifacts and options.jpeg_quality < 100:
         post_phase.append(
             ag.Jpeg(
                 quality_range=(

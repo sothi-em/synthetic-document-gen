@@ -573,6 +573,9 @@ class TestAugraphySmoke:
 
     def _run_single(self, toggle: str) -> None:
         clean = _clean_image()
+        # The JPEG stage is skipped at the quality-100 off-point, so pin a
+        # visible quality when exercising that toggle.
+        extra = {"jpeg_quality": 50} if toggle == "jpeg_artifacts" else {}
         opts = _options(
             paper_aging=False,
             vignette=False,
@@ -582,6 +585,7 @@ class TestAugraphySmoke:
             blur=False,
             warp=False,
             **{toggle: True},
+            **extra,
         )
         out = distress_array(clean, opts, seed=42)
         assert out.shape == clean.shape

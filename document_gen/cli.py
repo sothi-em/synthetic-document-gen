@@ -23,6 +23,7 @@ _DISTRESS_PRESETS: dict[str, dict[str, object]] = {
         "dirty_screen": True,
         "moire": True,
         "jpeg_artifacts": True,
+        "jpeg_quality": 50,
         "color_shift": True,
     },
     "office": {

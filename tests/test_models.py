@@ -409,14 +409,14 @@ class TestDistressOptions:
         for field in new_toggles:
             assert dumped[field] is False, field
         assert dumped["watermark_word"] == "CONFIDENTIAL"
-        assert dumped["jpeg_quality"] == 50
+        assert dumped["jpeg_quality"] == 100
         assert dumped["fold_count"] == 2
 
     @pytest.mark.parametrize(
         ("field", "value", "clamped"),
         [
             ("jpeg_quality", 5, 10),
-            ("jpeg_quality", 100, 95),
+            ("jpeg_quality", 150, 100),
             ("fold_count", 0, 1),
             ("fold_count", 9, 6),
         ],
@@ -426,6 +426,12 @@ class TestDistressOptions:
     ) -> None:
         options = DistressOptions(**{field: value})
         assert getattr(options, field) == clamped
+
+    def test_jpeg_quality_100_turns_effect_off(self) -> None:
+        options = DistressOptions(jpeg_artifacts=True, jpeg_quality=100)
+        assert options.jpeg_artifacts is False
+        options = DistressOptions(jpeg_artifacts=True, jpeg_quality=95)
+        assert options.jpeg_artifacts is True
 
     def test_watermark_word_stripped_and_capped(self) -> None:
         options = DistressOptions(watermark_word="  SECRET PLAN  ")
