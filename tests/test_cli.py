@@ -61,7 +61,6 @@ class TestCliParser:
         assert args.no_a4 is False
         assert args.distress is False
         assert args.distress_preset is None
-        assert args.distress_backend is None
         assert args.no_stains is None
         assert args.no_vignette is None
         assert args.no_noise is None
@@ -138,7 +137,6 @@ class TestDistressOptionsFromArgs:
         options = _distress_options_from_args(self._args("--distress"))
         assert options is not None
         assert options.enabled is True
-        assert options.backend == "augraphy"
         assert options.paper_aging is True
         assert options.vignette is True
         assert options.stains is True
@@ -155,7 +153,6 @@ class TestDistressOptionsFromArgs:
             self._args("--distress", "--distress-preset", preset)
         )
         assert options is not None
-        assert options.backend == "augraphy"
         for field, value in _DISTRESS_PRESETS[preset].items():
             assert getattr(options, field) is value, field
 
@@ -193,34 +190,9 @@ class TestDistressOptionsFromArgs:
         assert options.scribbles is True
         assert options.shadow_cast is True
 
-    def test_distress_backend_legacy(self) -> None:
-        options = _distress_options_from_args(
-            self._args("--distress", "--distress-backend", "legacy")
-        )
-        assert options is not None
-        assert options.backend == "legacy"
-
-    def test_distress_backend_wins_over_preset(self) -> None:
-        options = _distress_options_from_args(
-            self._args(
-                "--distress",
-                "--distress-preset",
-                "fax",
-                "--distress-backend",
-                "legacy",
-            )
-        )
-        assert options is not None
-        assert options.backend == "legacy"
-        assert options.faxify is True
-
     def test_rejects_bad_preset(self) -> None:
         with pytest.raises(SystemExit):
             self._args("--distress", "--distress-preset", "bogus")
-
-    def test_rejects_bad_backend(self) -> None:
-        with pytest.raises(SystemExit):
-            self._args("--distress", "--distress-backend", "bogus")
 
     def test_image_subcommand_rejects_bad_figure_kind(self) -> None:
         with pytest.raises(SystemExit):

@@ -152,9 +152,12 @@ class DistressEditRequest(BaseModel):
     """Request body for the distress preview/save endpoints."""
 
     distress: DistressOptions
-    seed: int = Field(description="Noise/warp seed (from the generation trace).")
-    stain_seed: int = Field(
-        description="Editor-derived stain seed (deterministic per document)."
+    effect_seeds: dict[str, int] = Field(
+        description=(
+            "Per-effect seed map (one plain-number seed per effect; see "
+            "document_gen.generators.png_gen.EFFECT_SEED_NAMES). The "
+            "render always uses these seeds."
+        )
     )
 
 
@@ -1373,7 +1376,7 @@ def distress_preview(doc_id: int, payload: DistressEditRequest) -> Response:
     _, original_bytes = _distress_source_bytes(doc_id)
     try:
         png_bytes = distress_image_to_bytes(
-            original_bytes, payload.distress, payload.seed, payload.stain_seed
+            original_bytes, payload.distress, payload.effect_seeds
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1391,13 +1394,13 @@ def distress_save(doc_id: int, payload: DistressEditRequest) -> dict:
     The render is re-derived from the stored original (which is left
     untouched, so the document stays re-editable) and written over the
     record's ``filepath``; the record's ``size_kb`` is refreshed and the
-    editor state (options + seeds) is stored so re-opening the preview
-    loads the same settings.
+    editor state (options + per-effect seeds) is stored so re-opening
+    the preview loads the same settings.
     """
     record, original_bytes = _distress_source_bytes(doc_id)
     try:
         png_bytes = distress_image_to_bytes(
-            original_bytes, payload.distress, payload.seed, payload.stain_seed
+            original_bytes, payload.distress, payload.effect_seeds
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1406,8 +1409,7 @@ def distress_save(doc_id: int, payload: DistressEditRequest) -> dict:
         updated = document_query.save_document_distress(
             doc_id,
             payload.distress.model_dump(mode="json"),
-            payload.seed,
-            payload.stain_seed,
+            payload.effect_seeds,
         )
     except FileNotFoundError as exc:
         raise HTTPException(

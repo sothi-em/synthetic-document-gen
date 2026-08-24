@@ -361,10 +361,10 @@ class TestDistressOptions:
         restored = DistressOptions.model_validate_json(options.model_dump_json())
         assert restored == options
 
-    def test_backend_default_and_dump(self) -> None:
+    def test_default_dump(self) -> None:
         dumped = DistressOptions().model_dump()
-        assert dumped["backend"] == "augraphy"
-        # Every new augraphy toggle defaults to False (enabling one never
+        assert dumped["seed"] is None
+        # Every augraphy toggle defaults to False (enabling one never
         # changes an existing render's output).
         new_toggles = [
             "ink_bleed",
@@ -409,14 +409,14 @@ class TestDistressOptions:
         for field in new_toggles:
             assert dumped[field] is False, field
         assert dumped["watermark_word"] == "CONFIDENTIAL"
-        assert dumped["jpeg_quality"] == 50
+        assert dumped["jpeg_quality"] == 100
         assert dumped["fold_count"] == 2
 
     @pytest.mark.parametrize(
         ("field", "value", "clamped"),
         [
             ("jpeg_quality", 5, 10),
-            ("jpeg_quality", 100, 95),
+            ("jpeg_quality", 150, 100),
             ("fold_count", 0, 1),
             ("fold_count", 9, 6),
         ],
@@ -427,19 +427,28 @@ class TestDistressOptions:
         options = DistressOptions(**{field: value})
         assert getattr(options, field) == clamped
 
+    def test_jpeg_quality_100_turns_effect_off(self) -> None:
+        options = DistressOptions(jpeg_artifacts=True, jpeg_quality=100)
+        assert options.jpeg_artifacts is False
+        options = DistressOptions(jpeg_artifacts=True, jpeg_quality=95)
+        assert options.jpeg_artifacts is True
+
     def test_watermark_word_stripped_and_capped(self) -> None:
         options = DistressOptions(watermark_word="  SECRET PLAN  ")
         assert options.watermark_word == "SECRET PLAN"
         options = DistressOptions(watermark_word="x" * 100)
         assert len(options.watermark_word) == 40
 
-    def test_backend_rejects_unknown_value(self) -> None:
-        with pytest.raises(ValueError):
-            DistressOptions(backend="bogus")
+    def test_legacy_backend_key_ignored(self) -> None:
+        # Pre-rework payloads carry a `backend` key; it is no longer a
+        # field and must be ignored, not rejected.
+        options = DistressOptions.model_validate({"enabled": True, "backend": "legacy"})
+        assert options.enabled is True
+        assert "backend" not in options.model_dump()
 
     def test_legacy_trace_payload_still_validates(self) -> None:
-        # Traces written before the migration contain only the original
-        # fields; they must validate with backend defaulting to "augraphy".
+        # Traces written before the rework contain only the original
+        # fields; they must still validate.
         payload = (
             '{"enabled": true, "paper_aging": true, "vignette": true, '
             '"vignette_strength": 0.3, "stains": true, "stain_count": 4, '
@@ -447,7 +456,7 @@ class TestDistressOptions:
             '"blur": true, "warp": false, "warp_strength": 0.5, "seed": 7}'
         )
         options = DistressOptions.model_validate_json(payload)
-        assert options.backend == "augraphy"
+        assert options.seed == 7
         assert options.ink_bleed is False
 
 

@@ -5,16 +5,18 @@
   native PNG output in v61).
 - :func:`distress_image` post-processes a rendered PNG in-place so it
   looks like a scanned, aged document, driven by
-  :class:`document_gen.models.distress.DistressOptions`. The default
-  ``"augraphy"`` backend runs an augraphy ``AugraphyPipeline`` (ink /
-  paper / post phases built from the options) plus custom warp/blur tail
-  stages; the ``"legacy"`` backend runs the preserved pre-augraphy
-  hand-rolled stage sequence (paper tint, vignette, stains, scanner
-  noise, faded ink, optional warp and blur) via
-  :func:`distress_array_legacy`.
+  :class:`document_gen.models.distress.DistressOptions` plus an
+  ``effect_seeds`` map (one plain-number seed per effect). The pass runs
+  an augraphy ``AugraphyPipeline`` (ink / paper / post phases built from
+  the options) plus custom warp/blur tail stages; every augmentation and
+  the warp tail stage re-seeds its PRNG stream from its own entry in
+  ``effect_seeds`` (missing keys fall back to 0), so each effect's random
+  output depends only on its own seed and parameters.
 - :func:`distress_image_to_bytes` applies the same pass to PNG bytes in
   memory (no file I/O); :func:`distress_array` is the shared array-level
   core both entry points run.
+- :func:`random_effect_seeds` creates a fresh random per-effect seed map
+  over the canonical effect-name list (:data:`EFFECT_SEED_NAMES`).
 
 Heavy dependencies (cv2, numpy, weasyprint, pypdfium2) are imported
 lazily inside functions to keep package import cheap.
@@ -24,20 +26,14 @@ from __future__ import annotations
 
 import logging
 import random
+import secrets
 import tempfile
 import threading
-import zlib
 from pathlib import Path
 
 from document_gen.models.distress import DistressOptions
 
 logger = logging.getLogger(__name__)
-
-#: Soft cream paper color (BGR).
-_PAPER_BGR = (215, 235, 245)
-
-#: Per-channel stain darkening factors (differential darkening -> brown tint).
-_STAIN_FACTORS = (0.75, 0.82, 0.88)
 
 #: Rasterization resolution for HTML -> PNG (points -> pixels).
 #: 192 DPI (2x the 96 DPI screen baseline) for crisp text and figures.
@@ -83,11 +79,19 @@ def _patch_augraphy() -> None:
       raises ``TypeError: 'numpy.float64' object cannot be interpreted
       as an integer``. Coerce the range to ints (still unpatched in
       augraphy 8.2.6, the latest 8.x release).
+    - ``TextureGenerator.generate_dot_granular_texture`` /
+      ``generate_rough_granular_texture`` (reachable via ``PaperFactory``
+      with its default ``texture_type="random"``): the granule size
+      bounds come from
+      ``np.floor``/``np.ceil`` (float64) and are passed to
+      ``random.randint``, the same ``TypeError``. Coerce the bounds to
+      ints for the duration of the call.
     """
     global _AUGRAPHY_PATCHED
     if _AUGRAPHY_PATCHED:
         return
     from augraphy.utilities.inkgenerator import InkGenerator
+    from augraphy.utilities.texturegenerator import TextureGenerator
 
     original = InkGenerator.generate_noise_clusters
 
@@ -99,11 +103,157 @@ def _patch_augraphy() -> None:
         )
 
     InkGenerator.generate_noise_clusters = generate_noise_clusters
+
+    def guard_float_randint(method):
+        """Run *method* with an int-coercing ``random.randint`` installed."""
+
+        def wrapper(self, *args, **kwargs):
+            original_randint = random.randint
+            random.randint = lambda a, b: original_randint(int(a), int(b))
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                random.randint = original_randint
+
+        return wrapper
+
+    TextureGenerator.generate_dot_granular_texture = guard_float_randint(
+        TextureGenerator.generate_dot_granular_texture
+    )
+    TextureGenerator.generate_rough_granular_texture = guard_float_randint(
+        TextureGenerator.generate_rough_granular_texture
+    )
     _AUGRAPHY_PATCHED = True
 
 
+#: Canonical list of every effect that draws from a PRNG stream: one
+#: entry per augraphy augmentation in
+#: :func:`_build_augraphy_pipeline` (tagged by its ``DistressOptions``
+#: flag name) plus the random warp tail stage. This is the contract for
+#: ``effect_seeds`` maps: the trace/frontend share these names.
+#:
+#: Excluded deterministic effects: ``ink_fade`` (only scales the
+#: pipeline ``overlay_alpha``), ``blur`` (Gaussian kernel), and
+#: ``dithering`` (the floyd-steinberg path makes no random draws;
+#: augraphy only uses the PRNG for the "random"/"ordered" dither
+#: types, which we do not use).
+EFFECT_SEED_NAMES: tuple[str, ...] = (
+    # ink phase
+    "ink_bleed",
+    "bleed_through",
+    "letterpress",
+    "ink_mottling",
+    "ink_color_swap",
+    "hollow",
+    "dot_matrix",
+    "low_ink_periodic_lines",
+    "low_ink_random_lines",
+    "lines_degradation",
+    # paper phase
+    "paper_aging",
+    "vignette",
+    "stains",
+    "noise_texturize",
+    "brightness_texturize",
+    "watermark",
+    "pattern_generator",
+    "voronoi_tessellation",
+    "delaunay_tessellation",
+    "paper_factory",
+    # post phase
+    "bad_photo_copy",
+    "noise",
+    "faxify",
+    "dirty_drum",
+    "dirty_rollers",
+    "dirty_screen",
+    "shadow_cast",
+    "lens_flare",
+    "reflected_light",
+    "brightness",
+    "gamma",
+    "color_shift",
+    "depth_blur",
+    "moire",
+    "lcd_pattern",
+    "jpeg_artifacts",
+    "double_exposure",
+    "folding",
+    "bindings",
+    "markup",
+    "scribbles",
+    # tail stage
+    "warp",
+)
+
+
+def random_effect_seeds() -> dict[str, int]:
+    """Create a fresh random per-effect seed map.
+
+    One plain random number per effect in :data:`EFFECT_SEED_NAMES`
+    (not derived from anything else), so each effect's random output is
+    independent of the others.
+
+    Returns:
+        A dict mapping every canonical effect name to a random seed in
+        ``[0, 0x7FFFFFFF)`` (safe for ``cv2.setRNGSeed``).
+    """
+    return {name: secrets.randbelow(0x7FFFFFFF) for name in EFFECT_SEED_NAMES}
+
+
+#: Fixed pipeline-level augraphy seed. Each effect re-seeds its own PRNG
+#: stream from its ``effect_seeds`` entry before running, so this value
+#: only covers the rare pipeline-internal randomness no effect owns.
+_PIPELINE_SEED = 0
+
+
+class _SeededAugmentation:
+    """Wrap an augraphy augmentation in its own per-effect PRNG stream.
+
+    augraphy seeds one set of process-global PRNGs per pipeline run, so
+    every effect draws from a single shared stream in pipeline order; an
+    upstream effect's draws (and how many it consumes) shift where
+    downstream effects draw theirs, and changing one effect's parameters
+    re-randomizes the others. This wrapper re-seeds ``random``,
+    ``np.random``, and cv2's RNG with the effect's own seed before
+    delegating, so each effect's random output depends only on its own
+    seed and parameters.
+
+    Relies on augraphy's ``apply_phase`` call pattern: ``should_run()``
+    then ``__call__(image=..., layer=..., mask=..., keypoints=...,
+    bounding_boxes=..., force=True)`` per object in the phase list. The
+    pipeline never passes a mask/keypoints/bounding_boxes into our
+    effects, so the inner augmentation always returns a bare image
+    array (never a result tuple), which ``apply_phase`` handles for
+    non-:class:`Augmentation` objects.
+    """
+
+    def __init__(self, augmentation, effect_name: str, seed: int) -> None:
+        self.augmentation = augmentation
+        self.effect_name = effect_name
+        self.seed = seed
+
+    def _reseed(self) -> None:
+        """Seed the three global PRNGs with this effect's seed."""
+        import cv2
+        import numpy as np
+
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+        cv2.setRNGSeed(self.seed)
+
+    def should_run(self) -> bool:
+        """Re-seed this effect's stream, then delegate to the inner check."""
+        self._reseed()
+        return self.augmentation.should_run()
+
+    def __call__(self, *args, **kwargs):
+        """Delegate to the inner augmentation (stream already seeded)."""
+        return self.augmentation(*args, **kwargs)
+
+
 def _build_augraphy_pipeline(
-    options: DistressOptions, seed: int, stain_seed: int | None, h: int, w: int
+    options: DistressOptions, effect_seeds: dict[str, int], h: int, w: int
 ):
     """Build a fresh augraphy :class:`AugraphyPipeline` from *options*.
 
@@ -113,7 +263,10 @@ def _build_augraphy_pipeline(
     on-flagged effect off, and ``i=1`` reproduces the original fixed
     ranges). Scalable effects scale their strength/count/alpha ranges;
     non-scalable effects (no continuous parameter) use ``p=i``
-    (deterministic under the pipeline seed). Phase lists:
+    (deterministic under the pipeline seed). Each augmentation is wrapped
+    in a :class:`_SeededAugmentation` that re-seeds the global PRNGs with
+    a per-effect derived seed before running, so changing one effect's
+    parameters never moves another effect's random output. Phase lists:
 
     - ink: ink bleed, bleed-through, letterpress, ink mottling, ink
       color swap, hollow, dithering, dot matrix, low-ink lines
@@ -132,302 +285,406 @@ def _build_augraphy_pipeline(
     intensity.
 
     Args:
-        options: Distress options (field values are backend-agnostic).
-        seed: Base random seed.
-        stain_seed: Optional second seed; augraphy has one pipeline-level
-            seed, so when given it is combined with *seed* via CRC32.
+        options: Distress options.
+        effect_seeds: Per-effect seed map (see :data:`EFFECT_SEED_NAMES`);
+            each augmentation is wrapped in a
+            :class:`_SeededAugmentation` re-seeded from its own entry
+            (missing keys fall back to 0).
         h: Image height in pixels (vignette light position).
         w: Image width in pixels (vignette light position).
 
     Returns:
-        A fresh ``AugraphyPipeline`` (deterministic under its seed; a
-        fresh instance is required per call), or ``None`` when no
-        augmentation is enabled in any phase.
+        A fresh ``AugraphyPipeline`` (deterministic under the
+        ``effect_seeds`` map; a fresh instance is required per call), or
+        ``None`` when no augmentation is enabled in any phase.
     """
     import augraphy as ag
 
     _patch_augraphy()
 
     def _i(name: str) -> float:
-        """Resolved 0-1 intensity for *name* (never None after validation)."""
+        """Resolved intensity for *name* (0-1; 0-10 count for
+        markup and scribbles)."""
         return getattr(options, f"{name}_intensity")
 
-    ink_phase = []
+    def _add(phase, name: str, aug) -> None:
+        """Append *aug* to *phase* tagged with its effect flag name."""
+        phase.append((name, aug))
+
+    ink_phase: list[tuple[str, object]] = []
     if options.ink_bleed and (i := _i("ink_bleed")) > 0:
-        ink_phase.append(
-            ag.InkBleed(intensity_range=(0.1 * i, 0.4 * i), kernel_size=(5, 5), p=1.0)
+        _add(
+            ink_phase,
+            "ink_bleed",
+            ag.InkBleed(intensity_range=(0.1 * i, 0.4 * i), kernel_size=(5, 5), p=1.0),
         )
     if options.bleed_through and (i := _i("bleed_through")) > 0:
-        ink_phase.append(
-            ag.BleedThrough(intensity_range=(0.1 * i, 0.4 * i), alpha=0.3 * i, p=1.0)
+        _add(
+            ink_phase,
+            "bleed_through",
+            ag.BleedThrough(intensity_range=(0.1 * i, 0.4 * i), alpha=0.3 * i, p=1.0),
         )
     if options.letterpress and (i := _i("letterpress")) > 0:
-        ink_phase.append(
+        _add(
+            ink_phase,
+            "letterpress",
             ag.Letterpress(
                 n_samples=(round(20 * i), round(60 * i)),
                 n_clusters=(round(20 * i), round(60 * i)),
                 std_range=(1500, 5000),
                 value_range=(200, 255),
                 p=1.0,
-            )
+            ),
         )
     if options.ink_mottling and (i := _i("ink_mottling")) > 0:
-        ink_phase.append(
-            ag.InkMottling(ink_mottling_alpha_range=(0.1 * i, 0.3 * i), p=1.0)
+        _add(
+            ink_phase,
+            "ink_mottling",
+            ag.InkMottling(ink_mottling_alpha_range=(0.1 * i, 0.3 * i), p=1.0),
         )
     if options.ink_color_swap and (i := _i("ink_color_swap")) > 0:
-        ink_phase.append(ag.InkColorSwap(ink_swap_color="random", p=i))
+        _add(ink_phase, "ink_color_swap", ag.InkColorSwap(ink_swap_color="random", p=i))
     if options.hollow and (i := _i("hollow")) > 0:
-        ink_phase.append(ag.Hollow(hollow_median_kernel_value_range=(71, 101), p=i))
+        _add(
+            ink_phase,
+            "hollow",
+            ag.Hollow(hollow_median_kernel_value_range=(71, 101), p=i),
+        )
     if options.dithering and (i := _i("dithering")) > 0:
-        ink_phase.append(ag.Dithering(dither="floyd-steinberg", order=(2, 4), p=i))
+        _add(
+            ink_phase,
+            "dithering",
+            ag.Dithering(dither="floyd-steinberg", order=(2, 4), p=i),
+        )
     if options.dot_matrix and (i := _i("dot_matrix")) > 0:
-        ink_phase.append(
+        _add(
+            ink_phase,
+            "dot_matrix",
             ag.DotMatrix(
                 dot_matrix_shape="random",
                 dot_matrix_dot_width_range=(round(3 * i), round(8 * i)),
                 dot_matrix_dot_height_range=(round(3 * i), round(8 * i)),
                 p=1.0,
-            )
+            ),
         )
     if options.low_ink_periodic_lines and (i := _i("low_ink_periodic_lines")) > 0:
-        ink_phase.append(
+        _add(
+            ink_phase,
+            "low_ink_periodic_lines",
             ag.LowInkPeriodicLines(
                 count_range=(round(2 * i), round(5 * i)),
                 period_range=(10, 30),
                 p=1.0,
-            )
+            ),
         )
     if options.low_ink_random_lines and (i := _i("low_ink_random_lines")) > 0:
-        ink_phase.append(
-            ag.LowInkRandomLines(count_range=(round(5 * i), round(10 * i)), p=1.0)
+        _add(
+            ink_phase,
+            "low_ink_random_lines",
+            ag.LowInkRandomLines(count_range=(round(5 * i), round(10 * i)), p=1.0),
         )
     if options.lines_degradation and (i := _i("lines_degradation")) > 0:
-        ink_phase.append(
-            ag.LinesDegradation(line_split_probability=(0.2 * i, 0.4 * i), p=1.0)
+        _add(
+            ink_phase,
+            "lines_degradation",
+            ag.LinesDegradation(line_split_probability=(0.2 * i, 0.4 * i), p=1.0),
         )
 
-    paper_phase = []
+    paper_phase: list[tuple[str, object]] = []
     if options.paper_aging and (i := _i("paper_aging")) > 0:
-        paper_phase.append(
+        _add(
+            paper_phase,
+            "paper_aging",
             ag.ColorPaper(
                 hue_range=(28, 45),
                 saturation_range=(round(10 * i), round(40 * i)),
                 p=1.0,
-            )
+            ),
         )
     if options.vignette:
-        paper_phase.append(
+        _add(
+            paper_phase,
+            "vignette",
             ag.LightingGradient(
                 light_position=(w // 2, h // 2),
                 max_brightness=255,
                 min_brightness=round(255 * (1 - options.vignette_strength)),
                 mode="gaussian",
                 p=1.0,
-            )
+            ),
         )
     if options.stains and options.stain_count > 0:
-        paper_phase.append(
+        _add(
+            paper_phase,
+            "stains",
             ag.Stains(
                 stains_type="random",
                 stains_blend_method="darken",
                 stains_blend_alpha=min(0.2 + 0.04 * options.stain_count, 0.9),
                 p=1.0,
-            )
+            ),
         )
     if options.noise_texturize and (i := _i("noise_texturize")) > 0:
-        paper_phase.append(
+        _add(
+            paper_phase,
+            "noise_texturize",
             ag.NoiseTexturize(
                 sigma_range=(round(3 * i), round(10 * i)),
                 turbulence_range=(round(2 * i), round(5 * i)),
                 p=1.0,
-            )
+            ),
         )
     if options.brightness_texturize and (i := _i("brightness_texturize")) > 0:
-        paper_phase.append(
+        _add(
+            paper_phase,
+            "brightness_texturize",
             ag.BrightnessTexturize(
                 texturize_range=(1.0 - 0.15 * i, 0.99), deviation=0.08, p=1.0
-            )
+            ),
         )
     if options.watermark and (i := _i("watermark")) > 0:
-        paper_phase.append(
+        _add(
+            paper_phase,
+            "watermark",
             ag.WaterMark(
                 watermark_word=options.watermark_word or "random",
                 watermark_font_size=(round(10 * i), round(15 * i)),
                 watermark_rotation=(0, 360),
                 watermark_method="darken",
                 p=1.0,
-            )
+            ),
         )
     if options.pattern_generator and (i := _i("pattern_generator")) > 0:
-        paper_phase.append(
-            ag.PatternGenerator(color="random", alpha_range=(0.25 * i, 0.4 * i), p=1.0)
+        _add(
+            paper_phase,
+            "pattern_generator",
+            ag.PatternGenerator(color="random", alpha_range=(0.25 * i, 0.4 * i), p=1.0),
         )
     if options.voronoi_tessellation and (i := _i("voronoi_tessellation")) > 0:
-        paper_phase.append(
+        _add(
+            paper_phase,
+            "voronoi_tessellation",
             ag.VoronoiTessellation(
                 mult_range=(50, 80),
                 num_cells_range=(round(500 * i), round(1000 * i)),
                 p=1.0,
-            )
+            ),
         )
     if options.delaunay_tessellation and (i := _i("delaunay_tessellation")) > 0:
-        paper_phase.append(
+        _add(
+            paper_phase,
+            "delaunay_tessellation",
             ag.DelaunayTessellation(
                 n_points_range=(round(500 * i), round(800 * i)), p=1.0
-            )
+            ),
         )
     if options.paper_factory and (i := _i("paper_factory")) > 0:
-        paper_phase.append(ag.PaperFactory(generate_texture=1, p=i))
+        _add(paper_phase, "paper_factory", ag.PaperFactory(generate_texture=1, p=i))
 
-    post_phase = []
+    post_phase: list[tuple[str, object]] = []
     if options.bad_photo_copy and (i := _i("bad_photo_copy")) > 0:
         # noise_type=3 (perlin): the default -1 picks randomly from
         # 1-4, and the worley kernel (type 4) crashes numba 0.67's
         # compiler with a bare AssertionError at JIT time in this
         # environment (reproduces in a fresh process, independent of
         # augmentation order). Types 1-3 compile and run fine.
-        post_phase.append(
+        _add(
+            post_phase,
+            "bad_photo_copy",
             ag.BadPhotoCopy(
                 noise_type=3,
                 noise_side="random",
                 noise_sparsity=(0.1 * i, 0.4 * i),
                 noise_concentration=(0.1 * i, 0.4 * i),
                 p=1.0,
-            )
+            ),
         )
     if options.noise:
-        post_phase.append(
-            ag.SubtleNoise(subtle_range=max(1, int(options.noise_strength)), p=1.0)
+        _add(
+            post_phase,
+            "noise",
+            ag.SubtleNoise(subtle_range=max(1, int(options.noise_strength)), p=1.0),
         )
     if options.faxify and (i := _i("faxify")) > 0:
-        post_phase.append(ag.Faxify(scale_range=(1.0, 1.0 + 0.25 * i), p=1.0))
+        _add(post_phase, "faxify", ag.Faxify(scale_range=(1.0, 1.0 + 0.25 * i), p=1.0))
     if options.dirty_drum and (i := _i("dirty_drum")) > 0:
-        post_phase.append(
-            ag.DirtyDrum(line_concentration=0.1 * i, line_width_range=(1, 4), p=1.0)
+        _add(
+            post_phase,
+            "dirty_drum",
+            ag.DirtyDrum(line_concentration=0.1 * i, line_width_range=(1, 4), p=1.0),
         )
     if options.dirty_rollers and (i := _i("dirty_rollers")) > 0:
-        post_phase.append(
-            ag.DirtyRollers(line_width_range=(round(8 * i), round(12 * i)), p=1.0)
+        _add(
+            post_phase,
+            "dirty_rollers",
+            ag.DirtyRollers(line_width_range=(round(8 * i), round(12 * i)), p=1.0),
         )
     if options.dirty_screen and (i := _i("dirty_screen")) > 0:
-        post_phase.append(
+        _add(
+            post_phase,
+            "dirty_screen",
             ag.DirtyScreen(
                 n_clusters=(round(50 * i), round(100 * i)),
                 n_samples=(round(2 * i), round(20 * i)),
                 p=1.0,
-            )
+            ),
         )
     if options.shadow_cast and (i := _i("shadow_cast")) > 0:
-        post_phase.append(
+        _add(
+            post_phase,
+            "shadow_cast",
             ag.ShadowCast(
                 shadow_side="random",
                 shadow_opacity_range=(0.2 * i, 0.5 * i),
                 shadow_blur_kernel_range=(101, 201),
                 p=1.0,
-            )
+            ),
         )
     if options.lens_flare and (i := _i("lens_flare")) > 0:
-        post_phase.append(
+        _add(
+            post_phase,
+            "lens_flare",
             ag.LensFlare(
                 lens_flare_location="random", lens_flare_size=(0.5 * i, 3 * i), p=1.0
-            )
+            ),
         )
     if options.reflected_light and (i := _i("reflected_light")) > 0:
-        post_phase.append(
+        _add(
+            post_phase,
+            "reflected_light",
             ag.ReflectedLight(
                 reflected_light_internal_max_brightness_range=(1.0 - 0.1 * i, 1.0),
                 p=1.0,
-            )
+            ),
         )
     if options.brightness and (i := _i("brightness")) > 0:
-        post_phase.append(
-            ag.Brightness(brightness_range=(1.0 - 0.1 * i, 1.0 + 0.1 * i), p=1.0)
+        _add(
+            post_phase,
+            "brightness",
+            ag.Brightness(brightness_range=(1.0 - 0.1 * i, 1.0 + 0.1 * i), p=1.0),
         )
     if options.gamma and (i := _i("gamma")) > 0:
-        post_phase.append(ag.Gamma(gamma_range=(1.0 - 0.2 * i, 1.0 + 0.2 * i), p=1.0))
+        _add(
+            post_phase,
+            "gamma",
+            ag.Gamma(gamma_range=(1.0 - 0.2 * i, 1.0 + 0.2 * i), p=1.0),
+        )
     if options.color_shift and (i := _i("color_shift")) > 0:
-        post_phase.append(
+        _add(
+            post_phase,
+            "color_shift",
             ag.ColorShift(
                 color_shift_offset_x_range=(round(3 * i), round(5 * i)),
                 color_shift_offset_y_range=(round(3 * i), round(5 * i)),
                 p=1.0,
-            )
+            ),
         )
     if options.depth_blur and (i := _i("depth_blur")) > 0:
-        post_phase.append(
+        _add(
+            post_phase,
+            "depth_blur",
             ag.DepthSimulatedBlur(
                 blur_major_axes_length_range=(round(120 * i), round(200 * i)),
                 blur_minor_axes_length_range=(round(120 * i), round(200 * i)),
                 p=1.0,
-            )
+            ),
         )
     if options.moire and (i := _i("moire")) > 0:
-        post_phase.append(
-            ag.Moire(moire_density=(15, 20), moire_blend_alpha=0.1 * i, p=1.0)
+        _add(
+            post_phase,
+            "moire",
+            ag.Moire(moire_density=(15, 20), moire_blend_alpha=0.1 * i, p=1.0),
         )
     if options.lcd_pattern and (i := _i("lcd_pattern")) > 0:
-        post_phase.append(
+        _add(
+            post_phase,
+            "lcd_pattern",
             ag.LCDScreenPattern(
                 pattern_type="random", pattern_overlay_alpha=0.3 * i, p=1.0
-            )
+            ),
         )
-    if options.jpeg_artifacts:
-        post_phase.append(
+    # Quality 100 is the off point: the round-trip would be near-
+    # invisible, so skip the stage (also covers unvalidated copies where
+    # the model validator did not clear the flag).
+    if options.jpeg_artifacts and options.jpeg_quality < 100:
+        _add(
+            post_phase,
+            "jpeg_artifacts",
             ag.Jpeg(
                 quality_range=(
                     max(10, options.jpeg_quality - 15),
                     options.jpeg_quality,
                 ),
                 p=1.0,
-            )
+            ),
         )
     if options.double_exposure and (i := _i("double_exposure")) > 0:
-        post_phase.append(
+        _add(
+            post_phase,
+            "double_exposure",
             ag.DoubleExposure(
                 gaussian_kernel_range=(9, 12),
                 offset_range=(round(18 * i), round(25 * i)),
                 p=1.0,
-            )
+            ),
         )
     if options.folding:
-        post_phase.append(
-            ag.Folding(fold_count=options.fold_count, fold_angle_range=(0, 0), p=1.0)
+        _add(
+            post_phase,
+            "folding",
+            ag.Folding(fold_count=options.fold_count, fold_angle_range=(0, 0), p=1.0),
         )
     if options.bindings and (i := _i("bindings")) > 0:
-        post_phase.append(
+        _add(
+            post_phase,
+            "bindings",
             ag.BindingsAndFasteners(
                 overlay_types="random",
                 ntimes=(2, 4),
                 use_figshare_library=0,
                 p=i,
-            )
+            ),
         )
     if options.markup and (i := _i("markup")) > 0:
-        post_phase.append(
+        _add(
+            post_phase,
+            "markup",
             ag.Markup(
-                num_lines_range=(round(2 * i), round(5 * i)),
+                num_lines_range=(round(i), round(i)),
                 markup_type="random",
                 p=1.0,
-            )
+            ),
         )
     if options.scribbles and (i := _i("scribbles")) > 0:
-        post_phase.append(
+        _add(
+            post_phase,
+            "scribbles",
             ag.Scribbles(
                 scribbles_type="random",
-                scribbles_count_range=(round(1 * i), round(4 * i)),
+                scribbles_count_range=(round(i), round(i)),
                 p=1.0,
-            )
+            ),
         )
 
     if not (ink_phase or paper_phase or post_phase):
         return None
 
-    # Mask to signed 32-bit: augraphy passes the seed to cv2.setRNGSeed,
-    # which overflows on the unsigned 32-bit values zlib.crc32 returns.
-    random_seed = (
-        zlib.crc32(f"{seed}:{stain_seed}".encode()) if stain_seed is not None else seed
-    ) & 0x7FFFFFFF
+    # Wrap each effect in its own per-effect PRNG stream (its own entry
+    # in the effect_seeds map) so one effect's seed or parameters never
+    # move another effect's random output. The pipeline-level seed is a
+    # fixed constant (harmless; the wrappers override per effect).
+    ink_phase = [
+        _SeededAugmentation(aug, name, effect_seeds.get(name, 0))
+        for name, aug in ink_phase
+    ]
+    paper_phase = [
+        _SeededAugmentation(aug, name, effect_seeds.get(name, 0))
+        for name, aug in paper_phase
+    ]
+    post_phase = [
+        _SeededAugmentation(aug, name, effect_seeds.get(name, 0))
+        for name, aug in post_phase
+    ]
     # ink_fade lowers the pipeline-level overlay alpha (i=1 -> 0.85, the
     # original faded-ink blend).
     fade = options.ink_fade_intensity if options.ink_fade else 0.0
@@ -437,48 +694,36 @@ def _build_augraphy_pipeline(
         paper_phase=paper_phase,
         post_phase=post_phase,
         overlay_alpha=overlay_alpha,
-        random_seed=random_seed,
+        random_seed=_PIPELINE_SEED,
     )
 
 
 def distress_array(
     clean: np.ndarray,
     options: DistressOptions,
-    seed: int,
-    stain_seed: int | None = None,
+    effect_seeds: dict[str, int],
 ) -> np.ndarray:
     """Run the distress (scanned/aged look) pass on an in-memory array.
 
-    Two backends are available via ``options.backend``:
+    The pass runs an augraphy ``AugraphyPipeline`` built from the
+    options (see :func:`_build_augraphy_pipeline`), where every
+    augmentation re-seeds its PRNG stream from its own entry in
+    *effect_seeds*, so the same (image, options, effect_seeds) tuple
+    always produces the same output and changing one effect's seed never
+    moves another effect's random output.
 
-    - ``"augraphy"`` (default): an augraphy ``AugraphyPipeline`` built
-      from the options (see :func:`_build_augraphy_pipeline`) replaces
-      the paper tint / vignette / stains / noise / ink re-stamp stages;
-      the whole pipeline is seeded from *seed* (combined with
-      *stain_seed* via CRC32 when given), so the same
-      (image, options, seed, stain_seed) tuple always produces the same
-      output.
-    - ``"legacy"``: the preserved pre-augraphy hand-rolled stage
-      sequence (:func:`distress_array_legacy`); stain positions are
-      unseeded unless *stain_seed* is given, and augraphy-only toggles
-      are ignored.
-
-    Both backends finish with the same custom tail stages, which have no
+    The pipeline is followed by the custom tail stages, which have no
     augraphy equivalent: warp (low-frequency remap, magnitude from
-    ``warp_strength``) then blur (Gaussian kernel sized by the blur
+    ``warp_strength``, seeded from the ``"warp"`` entry of
+    *effect_seeds*) then blur (Gaussian kernel sized by the blur
     intensity), each gated by its flag and intensity.
 
     Args:
         clean: Normalized 3-channel BGR source image (uint8).
         options: Per-effect controls. When ``options.enabled`` is
             ``False`` the input is returned unchanged (perfect image).
-        seed: Random seed driving the random stages (the whole augraphy
-            pipeline on the default backend; noise and warp on legacy).
-        stain_seed: Optional second seed. On the augraphy backend it is
-            combined with *seed* to seed the pipeline (stain positions
-            are reproducible); on the legacy backend it seeds only the
-            stain stage (``None`` keeps the unseeded OS-entropy
-            behavior).
+        effect_seeds: Per-effect seed map (see :data:`EFFECT_SEED_NAMES`);
+            missing keys fall back to 0.
 
     Returns:
         The distressed image as a new uint8 BGR array (the input is
@@ -488,9 +733,6 @@ def distress_array(
 
     if not options.enabled:
         return clean
-
-    if options.backend == "legacy":
-        return distress_array_legacy(clean, options, seed, stain_seed)
 
     out = clean.copy()
     h, w = out.shape[:2]
@@ -503,7 +745,7 @@ def distress_array(
         )
     else:
         with _AUGRAPHY_LOCK:
-            pipeline = _build_augraphy_pipeline(options, seed, stain_seed, h, w)
+            pipeline = _build_augraphy_pipeline(options, effect_seeds, h, w)
             out = pipeline.augment(out, return_dict=0) if pipeline is not None else out
         # Defensively re-normalize: augraphy should return uint8 BGR at
         # the input size, but edge cases must not leak out (e.g. Faxify
@@ -526,7 +768,7 @@ def distress_array(
     if options.warp:
         import cv2
 
-        warp_rng = np.random.default_rng(seed)
+        warp_rng = np.random.default_rng(effect_seeds.get("warp", 0))
         grid = 8
         dx = warp_rng.uniform(-1.0, 1.0, size=(grid, grid)).astype(np.float32)
         dy = warp_rng.uniform(-1.0, 1.0, size=(grid, grid)).astype(np.float32)
@@ -552,159 +794,25 @@ def distress_array(
     return out
 
 
-def distress_array_legacy(
-    clean: np.ndarray,
-    options: DistressOptions,
-    seed: int,
-    stain_seed: int | None = None,
-) -> np.ndarray:
-    """Legacy reference implementation of the pre-augraphy distress pass.
-
-    Kept verbatim for exact reproduction of old renders and as a
-    fallback; new work goes to the augraphy path
-    (:func:`distress_array` with ``options.backend == "augraphy"``).
-
-    Stage pipeline (each stage gated by its flag, in this order):
-    paper tint -> vignette -> stains -> noise -> ink re-stamp (soft-alpha
-    blend) -> warp -> blur. The ink re-stamp always runs when the paper
-    tint is on (it restores the document over the solid paper base);
-    ``ink_fade`` alone controls only the faded-ink tint.
-
-    The noise and warp stages are driven by *seed*. Stain positions and
-    radii are drawn from a non-seeded OS-entropy RNG and intentionally
-    vary on every run, unless *stain_seed* is given, in which case a
-    seeded RNG is used and the same (image, options, seed, stain_seed)
-    tuple always produces the same output.
-
-    Args:
-        clean: Normalized 3-channel BGR source image (uint8).
-        options: Per-effect controls. When ``options.enabled`` is
-            ``False`` the input is returned unchanged (perfect image).
-        seed: Random seed for the noise and warp stages.
-        stain_seed: Optional seed for the stain stage. ``None`` keeps
-            the unseeded OS-entropy behavior.
-
-    Returns:
-        The distressed image as a new uint8 BGR array (the input is
-        never mutated).
-    """
-    import cv2
-    import numpy as np
-
-    if not options.enabled:
-        return clean
-
-    h, w = clean.shape[:2]
-
-    # 1. Paper tint (or the clean render itself as an untouched base).
-    if options.paper_aging:
-        paper = np.full(clean.shape, _PAPER_BGR, dtype=np.uint8)
-    else:
-        paper = clean.copy()
-
-    # 2. Vignette: uneven lighting / darkened edges.
-    if options.vignette:
-        x = np.linspace(-1.0, 1.0, w, dtype=np.float32)
-        y = np.linspace(-1.0, 1.0, h, dtype=np.float32)
-        xx, yy = np.meshgrid(x, y)
-        factor = np.clip(
-            1.0 - options.vignette_strength * (xx * xx + yy * yy), 0.0, 1.0
-        )
-        paper = (paper.astype(np.float32) * factor[:, :, None]).astype(np.uint8)
-
-    # 3. Stains: low-frequency coffee/dirt blobs with differential
-    #    darkening. Centers/radii default to OS entropy (every run places
-    #    the stains differently); a *stain_seed* makes them reproducible.
-    if options.stains and options.stain_count > 0:
-        stain_rng = (
-            random.Random(stain_seed)
-            if stain_seed is not None
-            else random.SystemRandom()
-        )
-        mask = np.zeros((h, w), dtype=np.uint8)
-        for _ in range(options.stain_count):
-            cx = stain_rng.randint(0, w - 1)
-            cy = stain_rng.randint(0, h - 1)
-            radius = stain_rng.randint(40, 120)
-            cv2.circle(mask, (cx, cy), radius, 255, -1)
-        # Kernel must be odd and no larger than the image.
-        k = min(151, 2 * (min(h, w) // 2) + 1)
-        mask = cv2.GaussianBlur(mask, (max(k, 1), max(k, 1)), 0)
-        mask_norm = mask.astype(np.float32) / 255.0
-        for i, f in enumerate(_STAIN_FACTORS):
-            paper[:, :, i] = (
-                paper[:, :, i].astype(np.float32) * (1.0 - 0.35 * mask_norm * f)
-            ).astype(np.uint8)
-
-    # 4. Noise: high-frequency scanner grain (cv2.randn draws from the
-    #    global cv2 RNG, which is seeded for reproducibility).
-    if options.noise:
-        cv2.setRNGSeed(seed)
-        noise = np.zeros((h, w, 3), dtype=np.int16)
-        cv2.randn(noise, 0, options.noise_strength)
-        paper = np.clip(paper.astype(np.int16) + noise, 0, 255).astype(np.uint8)
-
-    # 5. Ink re-stamp: blend the clean render's ink back over the dirty
-    #    paper using a luminance-based soft alpha (no hard threshold, so
-    #    it works on colored renders too). Always runs when the paper
-    #    tint replaced the base (otherwise the page would be blank);
-    #    ``ink_fade`` only controls the faded-ink tint.
-    if options.paper_aging or options.ink_fade:
-        luminance = cv2.cvtColor(clean, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        alpha = ((255.0 - luminance) / 255.0)[:, :, None]
-        if options.ink_fade:
-            ink_px = 30.0 * 0.85 + paper.astype(np.float32) * 0.15
-        else:
-            ink_px = np.full_like(paper, 30.0, dtype=np.float32)
-        paper = (alpha * ink_px + (1.0 - alpha) * paper.astype(np.float32)).astype(
-            np.uint8
-        )
-
-    out = paper
-
-    # 6. Warp: subtle feed/lens warp via a low-frequency remap mesh.
-    if options.warp:
-        warp_rng = np.random.default_rng(seed)
-        grid = 8
-        dx = warp_rng.uniform(-1.0, 1.0, size=(grid, grid)).astype(np.float32)
-        dy = warp_rng.uniform(-1.0, 1.0, size=(grid, grid)).astype(np.float32)
-        dx = cv2.resize(dx, (w, h), interpolation=cv2.INTER_LINEAR)
-        dy = cv2.resize(dy, (w, h), interpolation=cv2.INTER_LINEAR)
-        amp = options.warp_strength * 3.0
-        map_x = np.tile(np.arange(w, dtype=np.float32), (h, 1)) + dx * amp
-        map_y = np.tile(np.arange(h, dtype=np.float32)[:, None], (1, w)) + dy * amp
-        out = cv2.remap(
-            out, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
-        )
-
-    # 7. Blur: scanner focus loss.
-    if options.blur:
-        out = cv2.GaussianBlur(out, (3, 3), 0)
-
-    return out
-
-
-def distress_image(path: Path, options: DistressOptions, seed: int) -> None:
+def distress_image(
+    path: Path, options: DistressOptions, effect_seeds: dict[str, int]
+) -> None:
     """Apply the distress (scanned/aged look) pass in-place to a PNG.
 
-    Runs :func:`distress_array` (augraphy pipeline by default, or the
-    legacy hand-rolled stage sequence when
-    ``options.backend == "legacy"``) plus the warp/blur tail stages. The
-    PNG at *path* is overwritten.
+    Runs :func:`distress_array` (augraphy pipeline plus the warp/blur
+    tail stages). The PNG at *path* is overwritten.
 
-    On the default augraphy backend *seed* drives the whole pipeline, so
-    the same (image, options, seed) triple always produces the same
-    output. On the legacy backend stain positions and radii are drawn
-    from a non-seeded OS-entropy RNG and intentionally vary on every
-    run; the noise and warp stages are driven by *seed*.
+    The pass is fully deterministic under the *effect_seeds* map: the
+    same (image, options, effect_seeds) triple always produces the same
+    output.
 
     Args:
         path: Path to the source PNG; overwritten with the distressed image.
         options: Per-effect controls. When ``options.enabled`` is ``False``
             the pass is skipped entirely and the file is left untouched
             (perfect image).
-        seed: Random seed for the noise and warp stages (stain positions
-            are intentionally unseeded).
+        effect_seeds: Per-effect seed map (see :data:`EFFECT_SEED_NAMES`);
+            missing keys fall back to 0.
 
     Raises:
         FileNotFoundError: If *path* does not exist (and the pass is enabled).
@@ -721,15 +829,12 @@ def distress_image(path: Path, options: DistressOptions, seed: int) -> None:
     if clean is None:
         raise ValueError(f"Could not decode image: {path}")
     clean = _normalize_bgr(clean)
-    out = distress_array(clean, options, seed, stain_seed=None)
+    out = distress_array(clean, options, effect_seeds)
     cv2.imwrite(str(path), out)
 
 
 def distress_image_to_bytes(
-    data: bytes,
-    options: DistressOptions,
-    seed: int,
-    stain_seed: int | None = None,
+    data: bytes, options: DistressOptions, effect_seeds: dict[str, int]
 ) -> bytes:
     """Apply the distress pass to PNG bytes and return the result as bytes.
 
@@ -741,9 +846,8 @@ def distress_image_to_bytes(
         data: PNG-encoded source image bytes.
         options: Per-effect controls. When ``options.enabled`` is
             ``False`` the input is returned unchanged (perfect image).
-        seed: Random seed for the noise and warp stages.
-        stain_seed: Optional seed for the stain stage. ``None`` keeps
-            the unseeded OS-entropy behavior.
+        effect_seeds: Per-effect seed map (see :data:`EFFECT_SEED_NAMES`);
+            missing keys fall back to 0.
 
     Returns:
         PNG-encoded bytes of the distressed image.
@@ -761,7 +865,7 @@ def distress_image_to_bytes(
     if clean is None:
         raise ValueError("Could not decode image from bytes")
     clean = _normalize_bgr(clean)
-    out = distress_array(clean, options, seed, stain_seed=stain_seed)
+    out = distress_array(clean, options, effect_seeds)
     ok, encoded = cv2.imencode(".png", out)
     if not ok:
         raise ValueError("Could not encode distressed image to PNG")
@@ -816,9 +920,8 @@ def _measure_content_height_mm(image, scale: float) -> float:
 
     Finds the last non-paper row and adds the bottom page margin plus a
     small safety buffer. The paper color is sampled from the top-left
-    corner (inside the page margin, so it reflects the ``@page``
-    background, which may be a non-white paper color) instead of
-    assuming white.
+    corner (inside the page margin, so it reflects the uniform white
+    ``@page`` background) instead of assuming white.
 
     Args:
         image: Rasterized page 1 (PIL image).

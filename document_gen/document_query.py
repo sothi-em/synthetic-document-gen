@@ -742,22 +742,20 @@ def update_document_size(doc_id: int) -> dict[str, Any] | None:
 def save_document_distress(
     doc_id: int,
     options: dict[str, Any],
-    seed: int,
-    stain_seed: int,
+    effect_seeds: dict[str, int],
 ) -> dict[str, Any] | None:
     """Persist the distress editor state on one document record.
 
-    Stores the per-effect options (a ``DistressOptions`` JSON dump), the
-    noise/warp seed, and the stain seed under the record's ``distress``
-    field, and refreshes ``size_kb`` from the (just rewritten) file so
-    the record stays accurate. Re-opening the preview editor loads this
-    state so an already-distressed image keeps its settings.
+    Stores the per-effect options (a ``DistressOptions`` JSON dump) and
+    the per-effect seed map under the record's ``distress`` field, and
+    refreshes ``size_kb`` from the (just rewritten) file so the record
+    stays accurate. Re-opening the preview editor loads this state so an
+    already-distressed image keeps its settings.
 
     Args:
         doc_id: The TinyDB ``doc_id`` of the document.
         options: Per-effect distress options as a JSON-serializable dict.
-        seed: Noise/warp seed used for the saved render.
-        stain_seed: Stain seed used for the saved render.
+        effect_seeds: Per-effect seed map used for the saved render.
 
     Returns:
         The updated record as a plain dict with an ``id`` key, or
@@ -779,8 +777,7 @@ def save_document_distress(
             {
                 "distress": {
                     "options": options,
-                    "seed": seed,
-                    "stain_seed": stain_seed,
+                    "effect_seeds": effect_seeds,
                 },
                 "size_kb": _document_fields(path)["size_kb"],
             },

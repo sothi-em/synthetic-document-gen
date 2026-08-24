@@ -2,18 +2,18 @@
 
 Each boolean flag maps to one effect in the distress pipeline
 (``document_gen.generators.png_gen.distress_image``). Effects without a
-dedicated numeric parameter additionally carry a 0-1 ``*_intensity``
-field that scales the effect's augraphy parameters; a ``None``
-intensity resolves from the flag (on -> 1.0, off -> 0.0), so payloads
-with only booleans (old saved options) render exactly as before.
-Values are clamped to their documented ranges rather than rejected, so
-over-specified inputs still produce a valid render (intensity fields
-are the exception: out-of-range 0-1 values are rejected).
+dedicated numeric parameter additionally carry a ``*_intensity`` field
+(0-1, except ``markup_intensity`` and ``scribbles_intensity``,
+which are 0-10 counts) that
+scales the effect's augraphy parameters; a ``None`` intensity resolves
+from the flag (on -> full, off -> 0.0), so boolean-only payloads (old
+saved options) render close to before. Values are clamped to their
+documented ranges rather than rejected, so over-specified inputs still
+produce a valid render (intensity fields are the exception:
+out-of-range values are rejected).
 """
 
 from __future__ import annotations
-
-from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -87,17 +87,16 @@ class DistressOptions(BaseModel):
     """Per-effect controls for the PNG distress pass.
 
     With ``enabled=False`` the pipeline skips the pass entirely and the
-    PNG is left as a perfect render. ``backend`` selects the rendering
-    engine: ``"augraphy"`` (default) runs the augraphy augmentation
-    pipeline, where ``seed`` drives the whole pipeline (so stain
-    positions are reproducible); ``"legacy"`` runs the preserved
-    pre-augraphy hand-rolled stage sequence, where stain positions are
-    intentionally random on every run unless a stain seed is given and
-    the augraphy-only toggles are ignored. When ``seed`` is ``None``
-    the pipeline falls back to the company seed.
+    PNG is left as a perfect render. The pass itself is driven by
+    per-effect seeds (one plain-number seed per effect, supplied by the
+    caller as an ``effect_seeds`` map); ``seed`` here is only a record
+    of the last user-applied override seed (``None`` = no override, the
+    per-effect internal seeds are in use) and the render never reads
+    it.
 
     Each augraphy effect is gated on ``flag and intensity > 0`` and its
-    augraphy parameters are scaled by the resolved 0-1 intensity, so an
+    augraphy parameters are scaled by the resolved intensity (0-1;
+    markup and scribbles use their 0-10 values as counts), so an
     explicit 0 turns an on-flagged effect off without changing the
     boolean. In the web UI each effect is a single slider that writes the
     intensity (or the dedicated numeric parameter) and derives the flag
@@ -107,15 +106,6 @@ class DistressOptions(BaseModel):
     enabled: bool = Field(
         description="Master switch; False = perfect (undistressed) image.",
         default=False,
-    )
-    backend: Literal["augraphy", "legacy"] = Field(
-        description=(
-            'Rendering engine: "augraphy" (default) runs the augraphy '
-            'augmentation pipeline; "legacy" runs the preserved '
-            "pre-augraphy hand-rolled stages (augraphy-only toggles are "
-            "no-ops there)."
-        ),
-        default="augraphy",
     )
     paper_aging: bool = Field(description="Cream/beige paper tint.", default=True)
     paper_aging_intensity: float | None = _intensity_field()
@@ -153,8 +143,10 @@ class DistressOptions(BaseModel):
     )
     seed: int | None = Field(
         description=(
-            "Random seed for the noise and warp stages (stain positions "
-            "are intentionally unseeded); None = company seed."
+            "Last override seed: the value the user last applied from "
+            "the editor (copied into every effect's seed). Record only "
+            "- the render never reads it; None = no override, the "
+            "per-effect internal seeds are in use."
         ),
         default=None,
     )
@@ -295,8 +287,8 @@ class DistressOptions(BaseModel):
         description="JPEG recompression artifacts.", default=False
     )
     jpeg_quality: int = Field(
-        description="Target JPEG quality for the artifacts (10-95).",
-        default=50,
+        description="Target JPEG quality for the artifacts (10-100; 100 = off).",
+        default=100,
     )
     double_exposure: bool = Field(description="Ghosted double exposure.", default=False)
     double_exposure_intensity: float | None = _intensity_field()
@@ -311,11 +303,27 @@ class DistressOptions(BaseModel):
         description="Handwritten-style markup lines over the document.",
         default=False,
     )
-    markup_intensity: float | None = _intensity_field()
+    markup_intensity: float | None = Field(
+        default=None,
+        ge=0,
+        le=10,
+        description=(
+            "Number of handwritten-style markup lines to draw (0 = off); "
+            "None resolves to 3 when the flag is on, 0 when off."
+        ),
+    )
     scribbles: bool = Field(
         description="Scribbles/doodles over the document.", default=False
     )
-    scribbles_intensity: float | None = _intensity_field()
+    scribbles_intensity: float | None = Field(
+        default=None,
+        ge=0,
+        le=10,
+        description=(
+            "Number of scribbles/doodles to draw (0 = off); "
+            "None resolves to 3 when the flag is on, 0 when off."
+        ),
+    )
 
     @field_validator("vignette_strength", "warp_strength")
     @classmethod
@@ -338,8 +346,8 @@ class DistressOptions(BaseModel):
     @field_validator("jpeg_quality")
     @classmethod
     def _clamp_jpeg_quality(cls, value: int) -> int:
-        """Clamp JPEG quality into 10-95."""
-        return min(max(value, 10), 95)
+        """Clamp JPEG quality into 10-100."""
+        return min(max(value, 10), 100)
 
     @field_validator("fold_count")
     @classmethod
@@ -358,10 +366,17 @@ class DistressOptions(BaseModel):
         """Resolve ``None`` intensities from their flags.
 
         Old saved payloads carry only the booleans: an on flag resolves
-        to 1.0 (today's look) and an off flag to 0.0, so they render
-        exactly as before. Explicit intensities are preserved as given.
+        to the effect's full value (1.0, or 3 for markup/scribbles
+        counts) and an off flag to 0.0, so they render close to before.
+        Explicit intensities are preserved as given.
         """
         for name in _INTENSITY_EFFECTS:
             if getattr(self, f"{name}_intensity") is None:
-                setattr(self, f"{name}_intensity", 1.0 if getattr(self, name) else 0.0)
+                full = 3.0 if name in ("markup", "scribbles") else 1.0
+                setattr(self, f"{name}_intensity", full if getattr(self, name) else 0.0)
+        # Quality 100 is the off point for the JPEG artifacts effect
+        # (a quality-100 round-trip is still lossy, but close enough to
+        # the clean render that it doubles as "no effect").
+        if self.jpeg_quality >= 100:
+            self.jpeg_artifacts = False
         return self

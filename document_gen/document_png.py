@@ -24,13 +24,16 @@ Stages (see :func:`generate_document_image`):
 5. :func:`document_gen.generators.png_gen.html_to_png` renders the HTML
    to a single PNG (page 1 of the render).
 6. When enabled, :func:`document_gen.generators.png_gen.distress_image`
-   post-processes the PNG in-place into a scanned/aged look (noise and
-   warp are seeded from the trace; stain positions are intentionally
-   random on every run). With tracing on, the untouched render is
-   preserved first as ``<stem>_original.png`` next to the document and
-   referenced from the trace
-   (``stages.distress.original_path``) — even when the distress pass is
-   disabled — so the image can later be distressed from the live editor.
+   post-processes the PNG in-place into a scanned/aged look, driven by
+   a per-effect seed map (one plain random number per effect, created
+   with :func:`document_gen.generators.png_gen.random_effect_seeds`
+   unless the options carry an override seed, in which case every
+   effect seed is set to it). The map is recorded on the trace
+   (``stages.distress.effect_seeds``) — even when the distress pass is
+   disabled, with tracing on — and the untouched render is preserved
+   first as ``<stem>_original.png`` next to the document and referenced
+   from the trace (``stages.distress.original_path``), so the image can
+   later be distressed deterministically from the live editor.
 
 The pipeline aggregates a per-stage **trace** (prompts, outputs,
 timings) stored on the document record under the ``gen_tracing`` field
@@ -69,7 +72,12 @@ from document_gen.document_pdf import (
     resolve_document_type,
     resolve_output_dir,
 )
-from document_gen.generators.png_gen import distress_image, html_to_png
+from document_gen.generators.png_gen import (
+    EFFECT_SEED_NAMES,
+    distress_image,
+    html_to_png,
+    random_effect_seeds,
+)
 from document_gen.llm import get_chat_backend
 from document_gen.models import (
     DistressOptions,
@@ -92,108 +100,50 @@ MARKDOWN_MAX_TOKENS = 8192
 #: Output-token cap for the stage-2 HTML+CSS document.
 HTML_MAX_TOKENS = 12000
 
-#: Canonical page rule for A4-locked image documents.
-_PAGE_RULE_A4 = "@page { size: A4 portrait; margin: 2cm; }"
+#: Canonical page rule for A4-locked image documents. The sheet is
+#: always uniform white (see :func:`_strip_sheet_backgrounds`).
+_PAGE_RULE_A4 = "@page { size: A4 portrait; margin: 2cm; background: white; }"
 
 #: Canonical page rule for content-sized image documents (WeasyPrint
 #: supports ``size: auto`` -> the page sizes itself to the content).
-_PAGE_RULE_AUTO = "@page { size: auto; margin: 2cm; }"
+_PAGE_RULE_AUTO = "@page { size: auto; margin: 2cm; background: white; }"
 
 #: A simple (non-nested) CSS rule block: selector(s) + declaration body.
 _RULE_BLOCK = re.compile(r"([^{}]+)\{([^{}]*)\}")
 
-#: A ``background``/``background-color`` declaration with its value.
-_BG_DECL = re.compile(
-    r"(?<![\w-])(?:background(?:-color)?)\s*:\s*([^;{}]+)", re.IGNORECASE
-)
-
 #: A full top-level ``background``/``background-color`` declaration
-#: (value + trailing semicolon), for stripping from ``@page`` bodies.
+#: (value + trailing semicolon), for stripping from ``@page`` bodies
+#: and sheet-level (``body``/``html``/``:root``) rule blocks.
 _AT_PAGE_BG_DECL = re.compile(
     r"(?<![\w-])background(?:-color)?\s*:\s*[^;{}]+;?", re.IGNORECASE
 )
 
-#: CSS values that are a single plain color (hex, rgb/rgba, hsl/hsla,
-#: or a named color). Gradients, image URLs, and shorthand stacks fail
-#: to match and are ignored.
-_COLOR_VALUE = re.compile(
-    r"^(?:#[0-9a-fA-F]{3,8}"
-    r"|rgba?\(\s*[\d.]+%?\s*,\s*[\d.]+%?\s*,\s*[\d.]+%?(?:\s*,\s*[\d.]+)?\s*\)"
-    r"|hsla?\([^;{}]*\)"
-    r"|[a-zA-Z][a-zA-Z-]*"
-    r")$"
-)
 
-#: Background values that carry no paint and must not be promoted to
-#: the page rule.
-_NON_COLOR_VALUES = {
-    "none",
-    "transparent",
-    "inherit",
-    "initial",
-    "unset",
-    "currentcolor",
-}
+def _strip_sheet_backgrounds(css: str) -> str:
+    """Remove ``background`` declarations from sheet-level rules.
 
-
-def _page_background_from_css(css: str) -> str | None:
-    """Return the first plain-color background declared on ``body``/``html``.
-
-    Scans simple (non-nested) rule blocks whose selector list contains
-    ``body`` or ``html`` and returns the value of the first top-level
-    ``background``/``background-color`` declaration that is a plain
-    color (hex, rgb/rgba, hsl/hsla, or a named color). Gradients, image
-    URLs, and ``none``/``transparent`` are ignored.
+    Image documents must render on a uniform white sheet: the distress
+    pipeline composites the page onto its own white paper layer, so a
+    colored sheet would be washed out toward white the moment any
+    effect runs. ``background``/``background-color`` declarations on
+    ``body``/``html``/``:root`` are removed for any value (a gradient
+    or image would break the uniform sheet too); element-level
+    backgrounds (headings, bands, tables) are untouched.
 
     Args:
-        css: The CSS text to scan.
+        css: The CSS text to clean.
 
     Returns:
-        The background color value, or ``None`` when no plain-color
-        body/html background is found.
+        The CSS with sheet-level background declarations removed.
     """
-    for match in _RULE_BLOCK.finditer(css):
+
+    def _process(match: re.Match[str]) -> str:
         selectors = [s.strip() for s in match.group(1).split(",")]
         if not any(sel in ("body", "html", ":root") for sel in selectors):
-            continue
-        for decl in _BG_DECL.finditer(match.group(2)):
-            value = decl.group(1).strip()
-            if value.lower() in _NON_COLOR_VALUES:
-                continue
-            if _COLOR_VALUE.match(value):
-                return value
-    return None
+            return match.group(0)
+        return f"{match.group(1)}{{{_AT_PAGE_BG_DECL.sub('', match.group(2))}}}"
 
-
-def _first_page_background(css: str) -> str | None:
-    """Return the first top-level background declaration in any ``@page`` rule.
-
-    Declarations nested inside margin boxes (e.g. ``@bottom-center``)
-    are ignored. The declaration is returned verbatim (including its
-    trailing semicolon) so it can be re-injected into a canonical rule.
-
-    Args:
-        css: The CSS text to scan.
-
-    Returns:
-        The declaration string (e.g. ``"background: #F5F0E8;"``), or
-        ``None`` when no top-level ``@page`` background is found.
-    """
-    pos = 0
-    while True:
-        match = _AT_PAGE.search(css, pos)
-        if match is None:
-            return None
-        open_idx = css.find("{", match.end())
-        if open_idx == -1:
-            return None
-        end_idx = _find_rule_end(css, open_idx)
-        body = css[open_idx + 1 : end_idx - 1]
-        for decl in _AT_PAGE_BG_DECL.finditer(body):
-            depth = body[: decl.start()].count("{") - body[: decl.start()].count("}")
-            if depth == 0:
-                return decl.group(0).strip()
-        pos = end_idx
+    return _RULE_BLOCK.sub(_process, css)
 
 
 def _strip_top_level_background(body: str) -> str:
@@ -219,40 +169,16 @@ def _strip_top_level_background(body: str) -> str:
     return "".join(result)
 
 
-def _with_page_background(page_rule: str, background: str | None) -> str:
-    """Append a background declaration to a canonical *page_rule*.
-
-    Args:
-        page_rule: A canonical ``@page { ... }`` rule string.
-        background: A background color value (e.g. ``"#F5F0E8"``) or a
-            full declaration (e.g. ``"background: #F5F0E8;"``); ``None``
-            leaves the rule unchanged.
-
-    Returns:
-        The page rule with ``background: ...`` added before the closing
-        brace, or *page_rule* unchanged when *background* is ``None`` or
-        the rule already carries a background.
-    """
-    if background is None or "background" in page_rule.lower():
-        return page_rule
-    if ":" not in background:
-        background = f"background: {background};"
-    return page_rule.rstrip("}").rstrip() + f" {background} }}"
-
-
 def _fix_page_rules(css: str, page_rule: str) -> str:
     """Force *page_rule* on the CSS ``@page`` rule(s).
 
     The first ``@page`` rule is prefixed with the canonical *page_rule*;
     any ``size:``/``margin:`` declarations inside all ``@page`` rules are
     stripped so they cannot override it. Top-level ``background:``
-    declarations are stripped too; the first one found is carried into
-    the canonical rule when the rule itself carries no background (this
-    preserves the page background that
-    :func:`sanitize_image_html` injects across :func:`force_page_size`
-    re-runs). Nested margin-box rules (page numbers etc.) are preserved.
+    declarations are stripped too (the canonical rule carries the
+    uniform white sheet). Nested margin-box rules (page numbers etc.)
+    are preserved.
     """
-    page_rule = _with_page_background(page_rule, _first_page_background(css))
     out: list[str] = []
     pos = 0
     first = True
@@ -283,13 +209,15 @@ def _fix_page_rules(css: str, page_rule: str) -> str:
 def _apply_page_rule(doc: str, page_rule: str) -> str:
     """Force *page_rule* onto *doc*'s CSS.
 
-    Ensures a ``<style>`` block exists and prefixes the first ``@page``
+    Ensures a ``<style>`` block exists, strips sheet-level backgrounds
+    (:func:`_strip_sheet_backgrounds`), and prefixes the first ``@page``
     rule with *page_rule* (any conflicting ``size:``/``margin:`` in
     existing ``@page`` rules is removed).
     """
 
     def _process(match: re.Match[str]) -> str:
-        return f"{match.group(1)}{_fix_page_rules(match.group(2), page_rule)}{match.group(3)}"
+        css = _strip_sheet_backgrounds(match.group(2))
+        return f"{match.group(1)}{_fix_page_rules(css, page_rule)}{match.group(3)}"
 
     if _STYLE_BLOCK.search(doc):
         return _STYLE_BLOCK.sub(_process, doc)
@@ -314,11 +242,13 @@ def sanitize_image_html(html: str, a4: bool = True) -> str:
         (content-sized intent; WeasyPrint ignores ``size: auto`` and
         :func:`document_gen.generators.png_gen.html_to_png` replaces it
         with an explicit measured size via :func:`force_page_size`).
-    - Promotes a plain-color ``body``/``html`` background onto the
-      ``@page`` rule. WeasyPrint paints a ``body`` background only
-      inside the page margins, leaving the margin area white; injecting
-      the same color into ``@page`` makes the whole sheet (margins
-      included) one uniform paper color.
+    - Strips sheet backgrounds: ``background``/``background-color`` on
+      ``body``/``html``/``:root`` and top-level ``@page`` backgrounds
+      are removed, so the sheet always renders uniform white. The
+      distress pipeline composites the page onto its own white paper
+      layer, so a colored sheet would be washed out toward white the
+      moment any effect runs; the paper look is owned by the distress
+      pass (e.g. the ``paper_aging`` effect).
 
     Args:
         html: The raw HTML document string from the LLM.
@@ -330,12 +260,6 @@ def sanitize_image_html(html: str, a4: bool = True) -> str:
     """
     doc = _extract_document(html)
     page_rule = _PAGE_RULE_A4 if a4 else _PAGE_RULE_AUTO
-    for style in _STYLE_BLOCK.finditer(doc):
-        page_rule = _with_page_background(
-            page_rule, _page_background_from_css(style.group(2))
-        )
-        if "background" in page_rule.lower():
-            break
     return _apply_page_rule(doc, page_rule)
 
 
@@ -375,7 +299,9 @@ def force_page_size(html: str, width: str, height: str) -> str:
     Returns:
         The HTML document string with the forced page rule.
     """
-    return _apply_page_rule(html, f"@page {{ size: {width} {height}; margin: 2cm; }}")
+    return _apply_page_rule(
+        html, f"@page {{ size: {width} {height}; margin: 2cm; background: white; }}"
+    )
 
 
 @dataclass
@@ -433,8 +359,11 @@ def generate_document_image(
         distress: Optional per-effect controls for the distress
             (scanned/aged look) pass. When ``None`` or
             ``distress.enabled`` is ``False`` (and tracing is off),
-            the PNG is left as a perfect render. The pass seed is
-            ``distress.seed`` when set, otherwise the company seed.
+            the PNG is left as a perfect render. The pass is driven by
+            a per-effect seed map: every effect seed is set to
+            ``distress.seed`` when it carries an override, otherwise a
+            fresh random seed is created per effect (recorded on the
+            trace).
         gen_tracing: When ``True``, the aggregated per-stage trace
             (prompts, outputs, timings) is persisted on the
             document record under the ``gen_tracing`` field. The
@@ -446,7 +375,11 @@ def generate_document_image(
             ``<stem>_original.png`` next to the document and referenced
             from the trace (``stages.distress.original_path``) —
             regardless of whether the distress pass runs — so the image
-            stays editable in the live distress editor. The trace is always
+            stays editable in the live distress editor. A fresh random
+            per-effect seed map is also created (unless *distress*
+            carries an override seed) and recorded on the trace
+            (``stages.distress.effect_seeds``) for the later pass. The
+            trace is always
             built and returned on the artifact; this flag only
             controls database persistence.
 
@@ -664,18 +597,30 @@ def generate_document_image(
     }
 
     # Stage 5: optional distress pass (scanned/aged look), in-place.
-    # Noise and warp are seeded from the trace; stain positions are
-    # intentionally unseeded (vary per run). When tracing is on, the
-    # untouched render is preserved first as ``<stem>_original.png``
-    # next to the document and referenced from the trace
-    # (``stages.distress.original_path``) — even when the pass is
-    # disabled — so the image can later be distressed from the live
-    # editor.
-    distress_seed = distress_options.seed if distress_options.seed is not None else seed
+    # Every effect draws from its own seed in the per-effect seed map:
+    # an explicit override (``distress.seed``) fills the whole map with
+    # that single value, otherwise a fresh random seed is created per
+    # effect. When tracing is on (or the pass runs), the map is
+    # recorded on the trace (``stages.distress.effect_seeds``) so the
+    # image can later be distressed deterministically from the live
+    # editor. The untouched render is preserved first as
+    # ``<stem>_original.png`` next to the document and referenced from
+    # the trace (``stages.distress.original_path``) — even when the
+    # pass is disabled — so the image stays editable in the live
+    # distress editor.
+    if distress_options.seed is not None:
+        effect_seeds = {name: distress_options.seed for name in EFFECT_SEED_NAMES}
+    elif gen_tracing or distress_options.enabled:
+        # Traced images (and any run where the pass actually executes)
+        # get their own random per-effect seeds (recorded on the
+        # trace) so later distress passes are deterministic per image.
+        effect_seeds = random_effect_seeds()
+    else:
+        effect_seeds = None
     trace["stages"]["distress"] = {
         "enabled": distress_options.enabled,
         "options": distress_options.model_dump(mode="json"),
-        "seed": distress_seed if distress_options.enabled else None,
+        "effect_seeds": effect_seeds,
     }
     if gen_tracing:
         original = save_original_png(path)
@@ -683,8 +628,8 @@ def generate_document_image(
         trace["stages"]["distress"]["original_path"] = str(original)
     if distress_options.enabled:
         t_step = time.perf_counter()
-        logger.info("Image document: distress pass started (seed=%d)", distress_seed)
-        distress_image(path, distress_options, distress_seed)
+        logger.info("Image document: distress pass started")
+        distress_image(path, distress_options, effect_seeds)
         distress_elapsed = time.perf_counter() - t_step
         logger.info(
             "Image document: distress pass done in %.3fs (%d bytes)",

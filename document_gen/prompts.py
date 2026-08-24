@@ -647,6 +647,11 @@ Hard layout rules (always obey)
    date, and optionally a reference number) is expected, and the company
    name should appear somewhere (e.g. a small letterhead line). The
    result must still look professional, cohesive, and print-friendly.
+   The page sheet itself must stay plain white: never set a background
+   color on `body`, `html`, or `@page` (sheet backgrounds are stripped
+   before rendering, and the paper look is applied later as a
+   post-processing effect) — use the palette on elements instead
+   (headings, rules, bands, table accents).
 5. Single standalone document: all CSS in one `<style>` block in the
    `<head>`. No external assets, no JavaScript, no image files, no
    inline SVG — any decoration must be drawn with CSS (borders, rules,
