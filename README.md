@@ -7,6 +7,8 @@ figures — grounded in a fictional company's profile.
 
 <video src="resources/ui_navigation_edit.mp4" controls autoplay loop muted style="max-width: 100%;"></video>
 
+[resources/ui_navigation_edit.mp4](https://github.com/user-attachments/assets/7df0a05e-d3dc-4140-b2ad-b7a03e0e7ee2)
+
 ## Capabilities & purposes
 
 - **Synthetic company profiles** — invents fictional companies (name, industry,
@@ -197,6 +199,8 @@ an interactive directory browser that navigates the server's filesystem.
 ### PNG image document generation
 
 <video src="resources/image_distress_final_small.mp4" controls autoplay loop muted style="max-width: 100%;"></video>
+
+[resources/image_distress_final_small.mp4](https://github.com/user-attachments/assets/343a290a-16e8-49f0-8851-623711610338)
 
 Renders one of a company's document types into a **single-page PNG image**.
 The pipeline mirrors the PDF pipeline (plan → markdown → figures →
