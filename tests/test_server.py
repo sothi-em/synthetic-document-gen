@@ -1298,9 +1298,8 @@ class TestCompanyImage:
         monkeypatch.setattr(
             server.document_png, "generate_document_image", fake_generate
         )
-        # A body with only augraphy-only fields (no legacy keys) is valid:
-        # the legacy fields keep their defaults and backend defaults to
-        # "augraphy".
+        # A body with only augraphy-only fields is valid: the other
+        # fields keep their model defaults.
         response = client.post(
             f"/api/companies/{company_db[0]}/image",
             json={
@@ -1311,7 +1310,7 @@ class TestCompanyImage:
         assert response.status_code == 202
         _poll_job(client, response.json()["id"])
         assert calls["distress"].ink_bleed is True
-        assert calls["distress"].backend == "augraphy"
+        assert calls["distress"].seed is None
         assert calls["distress"].paper_aging is True  # model default
 
     def test_job_error(self, client, company_db, monkeypatch, tmp_path) -> None:
@@ -1489,8 +1488,7 @@ class TestDistressEditor:
                 "blur": False,
                 "warp": False,
             },
-            "seed": 42,
-            "stain_seed": 123,
+            "effect_seeds": {"stains": 123, "warp": 42},
         }
 
     def _record(
@@ -1511,7 +1509,7 @@ class TestDistressEditor:
             {
                 "stages": {
                     "distress": {
-                        "seed": 42,
+                        "effect_seeds": {"stains": 42},
                         "original_path": str(original),
                     }
                 }
@@ -1541,8 +1539,7 @@ class TestDistressEditor:
         expected = distress_image_to_bytes(
             self._original_path(tmp_path).read_bytes(),
             DistressOptions(**self._body()["distress"]),
-            42,
-            stain_seed=123,
+            self._body()["effect_seeds"],
         )
         assert response.content == expected
         assert response.content.startswith(b"\x89PNG")
@@ -1602,8 +1599,7 @@ class TestDistressEditor:
         expected = distress_image_to_bytes(
             original_before,
             DistressOptions(**self._body()["distress"]),
-            42,
-            stain_seed=123,
+            self._body()["effect_seeds"],
         )
         assert (tmp_path / "acme_report.png").read_bytes() == expected
         assert (tmp_path / "acme_report.png").read_bytes() != document_before
@@ -1618,10 +1614,10 @@ class TestDistressEditor:
         assert listed is not None
         assert listed["size_kb"] == record["size_kb"]
 
-        # The editor state (options + the exact seeds) is persisted on
-        # the record so re-opening the preview loads the same settings.
-        assert listed["distress"]["seed"] == 42
-        assert listed["distress"]["stain_seed"] == 123
+        # The editor state (options + the exact per-effect seeds) is
+        # persisted on the record so re-opening the preview loads the
+        # same settings.
+        assert listed["distress"]["effect_seeds"] == self._body()["effect_seeds"]
         assert listed["distress"]["options"]["stain_count"] == 3
         assert listed["distress"]["options"]["paper_aging"] is False
 

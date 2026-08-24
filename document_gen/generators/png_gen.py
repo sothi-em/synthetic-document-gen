@@ -5,16 +5,18 @@
   native PNG output in v61).
 - :func:`distress_image` post-processes a rendered PNG in-place so it
   looks like a scanned, aged document, driven by
-  :class:`document_gen.models.distress.DistressOptions`. The default
-  ``"augraphy"`` backend runs an augraphy ``AugraphyPipeline`` (ink /
-  paper / post phases built from the options) plus custom warp/blur tail
-  stages; the ``"legacy"`` backend runs the preserved pre-augraphy
-  hand-rolled stage sequence (paper tint, vignette, stains, scanner
-  noise, faded ink, optional warp and blur) via
-  :func:`distress_array_legacy`.
+  :class:`document_gen.models.distress.DistressOptions` plus an
+  ``effect_seeds`` map (one plain-number seed per effect). The pass runs
+  an augraphy ``AugraphyPipeline`` (ink / paper / post phases built from
+  the options) plus custom warp/blur tail stages; every augmentation and
+  the warp tail stage re-seeds its PRNG stream from its own entry in
+  ``effect_seeds`` (missing keys fall back to 0), so each effect's random
+  output depends only on its own seed and parameters.
 - :func:`distress_image_to_bytes` applies the same pass to PNG bytes in
   memory (no file I/O); :func:`distress_array` is the shared array-level
   core both entry points run.
+- :func:`random_effect_seeds` creates a fresh random per-effect seed map
+  over the canonical effect-name list (:data:`EFFECT_SEED_NAMES`).
 
 Heavy dependencies (cv2, numpy, weasyprint, pypdfium2) are imported
 lazily inside functions to keep package import cheap.
@@ -24,20 +26,14 @@ from __future__ import annotations
 
 import logging
 import random
+import secrets
 import tempfile
 import threading
-import zlib
 from pathlib import Path
 
 from document_gen.models.distress import DistressOptions
 
 logger = logging.getLogger(__name__)
-
-#: Soft cream paper color (BGR).
-_PAPER_BGR = (215, 235, 245)
-
-#: Per-channel stain darkening factors (differential darkening -> brown tint).
-_STAIN_FACTORS = (0.75, 0.82, 0.88)
 
 #: Rasterization resolution for HTML -> PNG (points -> pixels).
 #: 192 DPI (2x the 96 DPI screen baseline) for crisp text and figures.
@@ -130,19 +126,80 @@ def _patch_augraphy() -> None:
     _AUGRAPHY_PATCHED = True
 
 
-def _derived_seed(base_seed: int, effect_name: str) -> int:
-    """Derive a per-effect seed from the combined base seed.
+#: Canonical list of every effect that draws from a PRNG stream: one
+#: entry per augraphy augmentation in
+#: :func:`_build_augraphy_pipeline` (tagged by its ``DistressOptions``
+#: flag name) plus the random warp tail stage. This is the contract for
+#: ``effect_seeds`` maps: the trace/frontend share these names.
+EFFECT_SEED_NAMES: tuple[str, ...] = (
+    # ink phase
+    "ink_bleed",
+    "bleed_through",
+    "letterpress",
+    "ink_mottling",
+    "ink_color_swap",
+    "hollow",
+    "dithering",
+    "dot_matrix",
+    "low_ink_periodic_lines",
+    "low_ink_random_lines",
+    "lines_degradation",
+    # paper phase
+    "paper_aging",
+    "vignette",
+    "stains",
+    "noise_texturize",
+    "brightness_texturize",
+    "watermark",
+    "pattern_generator",
+    "voronoi_tessellation",
+    "delaunay_tessellation",
+    "paper_factory",
+    # post phase
+    "bad_photo_copy",
+    "noise",
+    "faxify",
+    "dirty_drum",
+    "dirty_rollers",
+    "dirty_screen",
+    "shadow_cast",
+    "lens_flare",
+    "reflected_light",
+    "brightness",
+    "gamma",
+    "color_shift",
+    "depth_blur",
+    "moire",
+    "lcd_pattern",
+    "jpeg_artifacts",
+    "double_exposure",
+    "folding",
+    "bindings",
+    "markup",
+    "scribbles",
+    # tail stage
+    "warp",
+)
 
-    Args:
-        base_seed: The combined pipeline seed (see
-            :func:`_build_augraphy_pipeline`).
-        effect_name: The ``DistressOptions`` flag name of the effect
-            (e.g. ``"scribbles"``), stable across versions.
+
+def random_effect_seeds() -> dict[str, int]:
+    """Create a fresh random per-effect seed map.
+
+    One plain random number per effect in :data:`EFFECT_SEED_NAMES`
+    (not derived from anything else), so each effect's random output is
+    independent of the others.
 
     Returns:
-        A signed 32-bit seed (safe for ``cv2.setRNGSeed``).
+        A dict mapping every canonical effect name to a random seed in
+        ``[0, 0x7FFFFFFF)`` (safe for ``cv2.setRNGSeed``).
     """
-    return zlib.crc32(f"{base_seed}:{effect_name}".encode()) & 0x7FFFFFFF
+    return {name: secrets.randbelow(0x7FFFFFFF) for name in EFFECT_SEED_NAMES}
+
+
+#: Fixed pipeline-level augraphy seed. Each effect re-seeds its own PRNG
+#: stream from its ``effect_seeds`` entry before running, so this value
+#: only covers the rare pipeline-internal randomness no effect owns.
+_PIPELINE_SEED = 0
 
 
 class _SeededAugmentation:
@@ -153,9 +210,9 @@ class _SeededAugmentation:
     upstream effect's draws (and how many it consumes) shift where
     downstream effects draw theirs, and changing one effect's parameters
     re-randomizes the others. This wrapper re-seeds ``random``,
-    ``np.random``, and cv2's RNG with a seed derived from the base seed
-    and the effect name before delegating, so each effect's random
-    output depends only on the base seed and its own parameters.
+    ``np.random``, and cv2's RNG with the effect's own seed before
+    delegating, so each effect's random output depends only on its own
+    seed and parameters.
 
     Relies on augraphy's ``apply_phase`` call pattern: ``should_run()``
     then ``__call__(image=..., layer=..., mask=..., keypoints=...,
@@ -166,13 +223,13 @@ class _SeededAugmentation:
     non-:class:`Augmentation` objects.
     """
 
-    def __init__(self, augmentation, effect_name: str, base_seed: int) -> None:
+    def __init__(self, augmentation, effect_name: str, seed: int) -> None:
         self.augmentation = augmentation
         self.effect_name = effect_name
-        self.seed = _derived_seed(base_seed, effect_name)
+        self.seed = seed
 
     def _reseed(self) -> None:
-        """Seed the three global PRNGs with this effect's derived seed."""
+        """Seed the three global PRNGs with this effect's seed."""
         import cv2
         import numpy as np
 
@@ -191,7 +248,7 @@ class _SeededAugmentation:
 
 
 def _build_augraphy_pipeline(
-    options: DistressOptions, seed: int, stain_seed: int | None, h: int, w: int
+    options: DistressOptions, effect_seeds: dict[str, int], h: int, w: int
 ):
     """Build a fresh augraphy :class:`AugraphyPipeline` from *options*.
 
@@ -223,17 +280,18 @@ def _build_augraphy_pipeline(
     intensity.
 
     Args:
-        options: Distress options (field values are backend-agnostic).
-        seed: Base random seed.
-        stain_seed: Optional second seed; augraphy has one pipeline-level
-            seed, so when given it is combined with *seed* via CRC32.
+        options: Distress options.
+        effect_seeds: Per-effect seed map (see :data:`EFFECT_SEED_NAMES`);
+            each augmentation is wrapped in a
+            :class:`_SeededAugmentation` re-seeded from its own entry
+            (missing keys fall back to 0).
         h: Image height in pixels (vignette light position).
         w: Image width in pixels (vignette light position).
 
     Returns:
-        A fresh ``AugraphyPipeline`` (deterministic under its seed; a
-        fresh instance is required per call), or ``None`` when no
-        augmentation is enabled in any phase.
+        A fresh ``AugraphyPipeline`` (deterministic under the
+        ``effect_seeds`` map; a fresh instance is required per call), or
+        ``None`` when no augmentation is enabled in any phase.
     """
     import augraphy as ag
 
@@ -606,21 +664,21 @@ def _build_augraphy_pipeline(
     if not (ink_phase or paper_phase or post_phase):
         return None
 
-    # Mask to signed 32-bit: augraphy passes the seed to cv2.setRNGSeed,
-    # which overflows on the unsigned 32-bit values zlib.crc32 returns.
-    random_seed = (
-        zlib.crc32(f"{seed}:{stain_seed}".encode()) if stain_seed is not None else seed
-    ) & 0x7FFFFFFF
-    # Wrap each effect in its own per-effect PRNG stream (derived from the
-    # combined seed) so one effect's parameters never move another effect's
-    # random output. The pipeline-level seed is kept (harmless; the
-    # wrappers override per effect).
-    ink_phase = [_SeededAugmentation(aug, name, random_seed) for name, aug in ink_phase]
+    # Wrap each effect in its own per-effect PRNG stream (its own entry
+    # in the effect_seeds map) so one effect's seed or parameters never
+    # move another effect's random output. The pipeline-level seed is a
+    # fixed constant (harmless; the wrappers override per effect).
+    ink_phase = [
+        _SeededAugmentation(aug, name, effect_seeds.get(name, 0))
+        for name, aug in ink_phase
+    ]
     paper_phase = [
-        _SeededAugmentation(aug, name, random_seed) for name, aug in paper_phase
+        _SeededAugmentation(aug, name, effect_seeds.get(name, 0))
+        for name, aug in paper_phase
     ]
     post_phase = [
-        _SeededAugmentation(aug, name, random_seed) for name, aug in post_phase
+        _SeededAugmentation(aug, name, effect_seeds.get(name, 0))
+        for name, aug in post_phase
     ]
     # ink_fade lowers the pipeline-level overlay alpha (i=1 -> 0.85, the
     # original faded-ink blend).
@@ -631,48 +689,36 @@ def _build_augraphy_pipeline(
         paper_phase=paper_phase,
         post_phase=post_phase,
         overlay_alpha=overlay_alpha,
-        random_seed=random_seed,
+        random_seed=_PIPELINE_SEED,
     )
 
 
 def distress_array(
     clean: np.ndarray,
     options: DistressOptions,
-    seed: int,
-    stain_seed: int | None = None,
+    effect_seeds: dict[str, int],
 ) -> np.ndarray:
     """Run the distress (scanned/aged look) pass on an in-memory array.
 
-    Two backends are available via ``options.backend``:
+    The pass runs an augraphy ``AugraphyPipeline`` built from the
+    options (see :func:`_build_augraphy_pipeline`), where every
+    augmentation re-seeds its PRNG stream from its own entry in
+    *effect_seeds*, so the same (image, options, effect_seeds) tuple
+    always produces the same output and changing one effect's seed never
+    moves another effect's random output.
 
-    - ``"augraphy"`` (default): an augraphy ``AugraphyPipeline`` built
-      from the options (see :func:`_build_augraphy_pipeline`) replaces
-      the paper tint / vignette / stains / noise / ink re-stamp stages;
-      the whole pipeline is seeded from *seed* (combined with
-      *stain_seed* via CRC32 when given), so the same
-      (image, options, seed, stain_seed) tuple always produces the same
-      output.
-    - ``"legacy"``: the preserved pre-augraphy hand-rolled stage
-      sequence (:func:`distress_array_legacy`); stain positions are
-      unseeded unless *stain_seed* is given, and augraphy-only toggles
-      are ignored.
-
-    Both backends finish with the same custom tail stages, which have no
+    The pipeline is followed by the custom tail stages, which have no
     augraphy equivalent: warp (low-frequency remap, magnitude from
-    ``warp_strength``) then blur (Gaussian kernel sized by the blur
+    ``warp_strength``, seeded from the ``"warp"`` entry of
+    *effect_seeds*) then blur (Gaussian kernel sized by the blur
     intensity), each gated by its flag and intensity.
 
     Args:
         clean: Normalized 3-channel BGR source image (uint8).
         options: Per-effect controls. When ``options.enabled`` is
             ``False`` the input is returned unchanged (perfect image).
-        seed: Random seed driving the random stages (the whole augraphy
-            pipeline on the default backend; noise and warp on legacy).
-        stain_seed: Optional second seed. On the augraphy backend it is
-            combined with *seed* to seed the pipeline (stain positions
-            are reproducible); on the legacy backend it seeds only the
-            stain stage (``None`` keeps the unseeded OS-entropy
-            behavior).
+        effect_seeds: Per-effect seed map (see :data:`EFFECT_SEED_NAMES`);
+            missing keys fall back to 0.
 
     Returns:
         The distressed image as a new uint8 BGR array (the input is
@@ -682,9 +728,6 @@ def distress_array(
 
     if not options.enabled:
         return clean
-
-    if options.backend == "legacy":
-        return distress_array_legacy(clean, options, seed, stain_seed)
 
     out = clean.copy()
     h, w = out.shape[:2]
@@ -697,7 +740,7 @@ def distress_array(
         )
     else:
         with _AUGRAPHY_LOCK:
-            pipeline = _build_augraphy_pipeline(options, seed, stain_seed, h, w)
+            pipeline = _build_augraphy_pipeline(options, effect_seeds, h, w)
             out = pipeline.augment(out, return_dict=0) if pipeline is not None else out
         # Defensively re-normalize: augraphy should return uint8 BGR at
         # the input size, but edge cases must not leak out (e.g. Faxify
@@ -720,7 +763,7 @@ def distress_array(
     if options.warp:
         import cv2
 
-        warp_rng = np.random.default_rng(seed)
+        warp_rng = np.random.default_rng(effect_seeds.get("warp", 0))
         grid = 8
         dx = warp_rng.uniform(-1.0, 1.0, size=(grid, grid)).astype(np.float32)
         dy = warp_rng.uniform(-1.0, 1.0, size=(grid, grid)).astype(np.float32)
@@ -746,159 +789,25 @@ def distress_array(
     return out
 
 
-def distress_array_legacy(
-    clean: np.ndarray,
-    options: DistressOptions,
-    seed: int,
-    stain_seed: int | None = None,
-) -> np.ndarray:
-    """Legacy reference implementation of the pre-augraphy distress pass.
-
-    Kept verbatim for exact reproduction of old renders and as a
-    fallback; new work goes to the augraphy path
-    (:func:`distress_array` with ``options.backend == "augraphy"``).
-
-    Stage pipeline (each stage gated by its flag, in this order):
-    paper tint -> vignette -> stains -> noise -> ink re-stamp (soft-alpha
-    blend) -> warp -> blur. The ink re-stamp always runs when the paper
-    tint is on (it restores the document over the solid paper base);
-    ``ink_fade`` alone controls only the faded-ink tint.
-
-    The noise and warp stages are driven by *seed*. Stain positions and
-    radii are drawn from a non-seeded OS-entropy RNG and intentionally
-    vary on every run, unless *stain_seed* is given, in which case a
-    seeded RNG is used and the same (image, options, seed, stain_seed)
-    tuple always produces the same output.
-
-    Args:
-        clean: Normalized 3-channel BGR source image (uint8).
-        options: Per-effect controls. When ``options.enabled`` is
-            ``False`` the input is returned unchanged (perfect image).
-        seed: Random seed for the noise and warp stages.
-        stain_seed: Optional seed for the stain stage. ``None`` keeps
-            the unseeded OS-entropy behavior.
-
-    Returns:
-        The distressed image as a new uint8 BGR array (the input is
-        never mutated).
-    """
-    import cv2
-    import numpy as np
-
-    if not options.enabled:
-        return clean
-
-    h, w = clean.shape[:2]
-
-    # 1. Paper tint (or the clean render itself as an untouched base).
-    if options.paper_aging:
-        paper = np.full(clean.shape, _PAPER_BGR, dtype=np.uint8)
-    else:
-        paper = clean.copy()
-
-    # 2. Vignette: uneven lighting / darkened edges.
-    if options.vignette:
-        x = np.linspace(-1.0, 1.0, w, dtype=np.float32)
-        y = np.linspace(-1.0, 1.0, h, dtype=np.float32)
-        xx, yy = np.meshgrid(x, y)
-        factor = np.clip(
-            1.0 - options.vignette_strength * (xx * xx + yy * yy), 0.0, 1.0
-        )
-        paper = (paper.astype(np.float32) * factor[:, :, None]).astype(np.uint8)
-
-    # 3. Stains: low-frequency coffee/dirt blobs with differential
-    #    darkening. Centers/radii default to OS entropy (every run places
-    #    the stains differently); a *stain_seed* makes them reproducible.
-    if options.stains and options.stain_count > 0:
-        stain_rng = (
-            random.Random(stain_seed)
-            if stain_seed is not None
-            else random.SystemRandom()
-        )
-        mask = np.zeros((h, w), dtype=np.uint8)
-        for _ in range(options.stain_count):
-            cx = stain_rng.randint(0, w - 1)
-            cy = stain_rng.randint(0, h - 1)
-            radius = stain_rng.randint(40, 120)
-            cv2.circle(mask, (cx, cy), radius, 255, -1)
-        # Kernel must be odd and no larger than the image.
-        k = min(151, 2 * (min(h, w) // 2) + 1)
-        mask = cv2.GaussianBlur(mask, (max(k, 1), max(k, 1)), 0)
-        mask_norm = mask.astype(np.float32) / 255.0
-        for i, f in enumerate(_STAIN_FACTORS):
-            paper[:, :, i] = (
-                paper[:, :, i].astype(np.float32) * (1.0 - 0.35 * mask_norm * f)
-            ).astype(np.uint8)
-
-    # 4. Noise: high-frequency scanner grain (cv2.randn draws from the
-    #    global cv2 RNG, which is seeded for reproducibility).
-    if options.noise:
-        cv2.setRNGSeed(seed)
-        noise = np.zeros((h, w, 3), dtype=np.int16)
-        cv2.randn(noise, 0, options.noise_strength)
-        paper = np.clip(paper.astype(np.int16) + noise, 0, 255).astype(np.uint8)
-
-    # 5. Ink re-stamp: blend the clean render's ink back over the dirty
-    #    paper using a luminance-based soft alpha (no hard threshold, so
-    #    it works on colored renders too). Always runs when the paper
-    #    tint replaced the base (otherwise the page would be blank);
-    #    ``ink_fade`` only controls the faded-ink tint.
-    if options.paper_aging or options.ink_fade:
-        luminance = cv2.cvtColor(clean, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        alpha = ((255.0 - luminance) / 255.0)[:, :, None]
-        if options.ink_fade:
-            ink_px = 30.0 * 0.85 + paper.astype(np.float32) * 0.15
-        else:
-            ink_px = np.full_like(paper, 30.0, dtype=np.float32)
-        paper = (alpha * ink_px + (1.0 - alpha) * paper.astype(np.float32)).astype(
-            np.uint8
-        )
-
-    out = paper
-
-    # 6. Warp: subtle feed/lens warp via a low-frequency remap mesh.
-    if options.warp:
-        warp_rng = np.random.default_rng(seed)
-        grid = 8
-        dx = warp_rng.uniform(-1.0, 1.0, size=(grid, grid)).astype(np.float32)
-        dy = warp_rng.uniform(-1.0, 1.0, size=(grid, grid)).astype(np.float32)
-        dx = cv2.resize(dx, (w, h), interpolation=cv2.INTER_LINEAR)
-        dy = cv2.resize(dy, (w, h), interpolation=cv2.INTER_LINEAR)
-        amp = options.warp_strength * 3.0
-        map_x = np.tile(np.arange(w, dtype=np.float32), (h, 1)) + dx * amp
-        map_y = np.tile(np.arange(h, dtype=np.float32)[:, None], (1, w)) + dy * amp
-        out = cv2.remap(
-            out, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
-        )
-
-    # 7. Blur: scanner focus loss.
-    if options.blur:
-        out = cv2.GaussianBlur(out, (3, 3), 0)
-
-    return out
-
-
-def distress_image(path: Path, options: DistressOptions, seed: int) -> None:
+def distress_image(
+    path: Path, options: DistressOptions, effect_seeds: dict[str, int]
+) -> None:
     """Apply the distress (scanned/aged look) pass in-place to a PNG.
 
-    Runs :func:`distress_array` (augraphy pipeline by default, or the
-    legacy hand-rolled stage sequence when
-    ``options.backend == "legacy"``) plus the warp/blur tail stages. The
-    PNG at *path* is overwritten.
+    Runs :func:`distress_array` (augraphy pipeline plus the warp/blur
+    tail stages). The PNG at *path* is overwritten.
 
-    On the default augraphy backend *seed* drives the whole pipeline, so
-    the same (image, options, seed) triple always produces the same
-    output. On the legacy backend stain positions and radii are drawn
-    from a non-seeded OS-entropy RNG and intentionally vary on every
-    run; the noise and warp stages are driven by *seed*.
+    The pass is fully deterministic under the *effect_seeds* map: the
+    same (image, options, effect_seeds) triple always produces the same
+    output.
 
     Args:
         path: Path to the source PNG; overwritten with the distressed image.
         options: Per-effect controls. When ``options.enabled`` is ``False``
             the pass is skipped entirely and the file is left untouched
             (perfect image).
-        seed: Random seed for the noise and warp stages (stain positions
-            are intentionally unseeded).
+        effect_seeds: Per-effect seed map (see :data:`EFFECT_SEED_NAMES`);
+            missing keys fall back to 0.
 
     Raises:
         FileNotFoundError: If *path* does not exist (and the pass is enabled).
@@ -915,15 +824,12 @@ def distress_image(path: Path, options: DistressOptions, seed: int) -> None:
     if clean is None:
         raise ValueError(f"Could not decode image: {path}")
     clean = _normalize_bgr(clean)
-    out = distress_array(clean, options, seed, stain_seed=None)
+    out = distress_array(clean, options, effect_seeds)
     cv2.imwrite(str(path), out)
 
 
 def distress_image_to_bytes(
-    data: bytes,
-    options: DistressOptions,
-    seed: int,
-    stain_seed: int | None = None,
+    data: bytes, options: DistressOptions, effect_seeds: dict[str, int]
 ) -> bytes:
     """Apply the distress pass to PNG bytes and return the result as bytes.
 
@@ -935,9 +841,8 @@ def distress_image_to_bytes(
         data: PNG-encoded source image bytes.
         options: Per-effect controls. When ``options.enabled`` is
             ``False`` the input is returned unchanged (perfect image).
-        seed: Random seed for the noise and warp stages.
-        stain_seed: Optional seed for the stain stage. ``None`` keeps
-            the unseeded OS-entropy behavior.
+        effect_seeds: Per-effect seed map (see :data:`EFFECT_SEED_NAMES`);
+            missing keys fall back to 0.
 
     Returns:
         PNG-encoded bytes of the distressed image.
@@ -955,7 +860,7 @@ def distress_image_to_bytes(
     if clean is None:
         raise ValueError("Could not decode image from bytes")
     clean = _normalize_bgr(clean)
-    out = distress_array(clean, options, seed, stain_seed=stain_seed)
+    out = distress_array(clean, options, effect_seeds)
     ok, encoded = cv2.imencode(".png", out)
     if not ok:
         raise ValueError("Could not encode distressed image to PNG")

@@ -24,15 +24,16 @@ Stages (see :func:`generate_document_image`):
 5. :func:`document_gen.generators.png_gen.html_to_png` renders the HTML
    to a single PNG (page 1 of the render).
 6. When enabled, :func:`document_gen.generators.png_gen.distress_image`
-   post-processes the PNG in-place into a scanned/aged look (noise and
-   warp are seeded from the trace; stain positions are intentionally
-   random on every run). With tracing on, a fresh random distress seed
-   is created (unless one is explicitly given) and recorded on the
-   trace (``stages.distress.seed``) — even when the distress pass is
-   disabled — and the untouched render is preserved first as
-   ``<stem>_original.png`` next to the document and referenced from the
-   trace (``stages.distress.original_path``), so the image can later be
-   distressed deterministically from the live editor.
+   post-processes the PNG in-place into a scanned/aged look, driven by
+   a per-effect seed map (one plain random number per effect, created
+   with :func:`document_gen.generators.png_gen.random_effect_seeds`
+   unless the options carry an override seed, in which case every
+   effect seed is set to it). The map is recorded on the trace
+   (``stages.distress.effect_seeds``) — even when the distress pass is
+   disabled, with tracing on — and the untouched render is preserved
+   first as ``<stem>_original.png`` next to the document and referenced
+   from the trace (``stages.distress.original_path``), so the image can
+   later be distressed deterministically from the live editor.
 
 The pipeline aggregates a per-stage **trace** (prompts, outputs,
 timings) stored on the document record under the ``gen_tracing`` field
@@ -44,7 +45,6 @@ from __future__ import annotations
 
 import logging
 import re
-import secrets
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -72,7 +72,12 @@ from document_gen.document_pdf import (
     resolve_document_type,
     resolve_output_dir,
 )
-from document_gen.generators.png_gen import distress_image, html_to_png
+from document_gen.generators.png_gen import (
+    EFFECT_SEED_NAMES,
+    distress_image,
+    html_to_png,
+    random_effect_seeds,
+)
 from document_gen.llm import get_chat_backend
 from document_gen.models import (
     DistressOptions,
@@ -258,20 +263,6 @@ def sanitize_image_html(html: str, a4: bool = True) -> str:
     return _apply_page_rule(doc, page_rule)
 
 
-def random_distress_seed() -> int:
-    """Create a fresh random seed for the distress pass.
-
-    Used for traced images whose distress pass runs later from the
-    live editor: the seed is recorded on the trace at generation time
-    so the later pass is deterministic per image.
-
-    Returns:
-        A random seed in ``[0, 0x7FFFFFFF)`` (matching the web
-        editor's seed range).
-    """
-    return secrets.randbelow(0x7FFFFFFF)
-
-
 def save_original_png(path: Path) -> Path:
     """Preserve an untouched copy of a rendered PNG alongside itself.
 
@@ -368,10 +359,11 @@ def generate_document_image(
         distress: Optional per-effect controls for the distress
             (scanned/aged look) pass. When ``None`` or
             ``distress.enabled`` is ``False`` (and tracing is off),
-            the PNG is left as a perfect render. The pass seed is
-            ``distress.seed`` when set, otherwise a fresh random seed
-            (recorded on the trace) when tracing is on, else the
-            company seed.
+            the PNG is left as a perfect render. The pass is driven by
+            a per-effect seed map: every effect seed is set to
+            ``distress.seed`` when it carries an override, otherwise a
+            fresh random seed is created per effect (recorded on the
+            trace).
         gen_tracing: When ``True``, the aggregated per-stage trace
             (prompts, outputs, timings) is persisted on the
             document record under the ``gen_tracing`` field. The
@@ -384,9 +376,10 @@ def generate_document_image(
             from the trace (``stages.distress.original_path``) —
             regardless of whether the distress pass runs — so the image
             stays editable in the live distress editor. A fresh random
-            distress seed is also created (unless *distress* carries
-            one) and recorded on the trace (``stages.distress.seed``)
-            for the later pass. The trace is always
+            per-effect seed map is also created (unless *distress*
+            carries an override seed) and recorded on the trace
+            (``stages.distress.effect_seeds``) for the later pass. The
+            trace is always
             built and returned on the artifact; this flag only
             controls database persistence.
 
@@ -604,29 +597,30 @@ def generate_document_image(
     }
 
     # Stage 5: optional distress pass (scanned/aged look), in-place.
-    # Noise and warp are seeded from the trace; stain positions are
-    # intentionally unseeded (vary per run). When tracing is on, a
-    # fresh random distress seed is created (unless one is explicitly
-    # given) and recorded on the trace so the image can later be
-    # distressed deterministically from the live editor. The untouched
-    # render is preserved first as ``<stem>_original.png`` next to the
-    # document and referenced from the trace
-    # (``stages.distress.original_path``) — even when the pass is
-    # disabled — so the image stays editable in the live distress
-    # editor.
+    # Every effect draws from its own seed in the per-effect seed map:
+    # an explicit override (``distress.seed``) fills the whole map with
+    # that single value, otherwise a fresh random seed is created per
+    # effect. When tracing is on (or the pass runs), the map is
+    # recorded on the trace (``stages.distress.effect_seeds``) so the
+    # image can later be distressed deterministically from the live
+    # editor. The untouched render is preserved first as
+    # ``<stem>_original.png`` next to the document and referenced from
+    # the trace (``stages.distress.original_path``) — even when the
+    # pass is disabled — so the image stays editable in the live
+    # distress editor.
     if distress_options.seed is not None:
-        distress_seed = distress_options.seed
-    elif gen_tracing:
-        # Traced images get their own random seed (recorded on the
-        # trace) instead of the company seed, so later distress passes
-        # are deterministic per image.
-        distress_seed = random_distress_seed()
+        effect_seeds = {name: distress_options.seed for name in EFFECT_SEED_NAMES}
+    elif gen_tracing or distress_options.enabled:
+        # Traced images (and any run where the pass actually executes)
+        # get their own random per-effect seeds (recorded on the
+        # trace) so later distress passes are deterministic per image.
+        effect_seeds = random_effect_seeds()
     else:
-        distress_seed = seed
+        effect_seeds = None
     trace["stages"]["distress"] = {
         "enabled": distress_options.enabled,
         "options": distress_options.model_dump(mode="json"),
-        "seed": distress_seed if (distress_options.enabled or gen_tracing) else None,
+        "effect_seeds": effect_seeds,
     }
     if gen_tracing:
         original = save_original_png(path)
@@ -634,8 +628,8 @@ def generate_document_image(
         trace["stages"]["distress"]["original_path"] = str(original)
     if distress_options.enabled:
         t_step = time.perf_counter()
-        logger.info("Image document: distress pass started (seed=%d)", distress_seed)
-        distress_image(path, distress_options, distress_seed)
+        logger.info("Image document: distress pass started")
+        distress_image(path, distress_options, effect_seeds)
         distress_elapsed = time.perf_counter() - t_step
         logger.info(
             "Image document: distress pass done in %.3fs (%d bytes)",

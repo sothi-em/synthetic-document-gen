@@ -39,9 +39,11 @@ class TestIntensityResolution:
         assert off.ink_bleed_intensity == 0.7
 
     @pytest.mark.parametrize("name", _INTENSITY_EFFECTS)
-    def test_every_effect_flag_on_resolves_to_one(self, name: str) -> None:
+    def test_every_effect_flag_on_resolves_to_full(self, name: str) -> None:
+        # markup/scribbles use 0-10 counts (full = 3), the rest 0-1.
+        full = 3.0 if name in ("markup", "scribbles") else 1.0
         opts = DistressOptions(**{name: True})
-        assert getattr(opts, f"{name}_intensity") == 1.0
+        assert getattr(opts, f"{name}_intensity") == full
 
     @pytest.mark.parametrize("name", _INTENSITY_EFFECTS)
     def test_every_effect_flag_off_resolves_to_zero(self, name: str) -> None:
@@ -78,7 +80,6 @@ class TestSerialization:
         # *_intensity keys. Must load and resolve to the old look.
         payload = {
             "enabled": True,
-            "backend": "augraphy",
             "ink_bleed": True,
             "shadow_cast": False,
         }
@@ -89,3 +90,18 @@ class TestSerialization:
         again = DistressOptions.model_validate(opts.model_dump())
         assert again.ink_bleed_intensity == 1.0
         assert again.shadow_cast_intensity == 0.0
+
+
+class TestSeedField:
+    def test_seed_defaults_to_none(self) -> None:
+        assert DistressOptions().seed is None
+
+    def test_override_seed_recorded(self) -> None:
+        assert DistressOptions(enabled=True, seed=42).seed == 42
+
+    def test_legacy_backend_key_ignored(self) -> None:
+        # Pre-rework payloads carry a `backend` key; it is no longer a
+        # field and must be ignored, not rejected.
+        opts = DistressOptions.model_validate({"enabled": True, "backend": "legacy"})
+        assert opts.enabled is True
+        assert "backend" not in opts.model_dump()

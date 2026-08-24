@@ -205,7 +205,7 @@ WeasyPrint at 192 DPI. The page is A4 portrait by default; unchecking the A4
 aspect ratio lets the page size itself to the content.
 
 Optionally, the PNG is post-processed (**distress**) to look like a scanned,
-aged document. The default **augraphy** backend builds an
+aged document. The pass builds an
 [Augraphy](https://github.com/anchal-agrawel/Augraphy) pipeline from the
 `DistressOptions` effects: the classic effects (paper aging, vignette,
 stains, noise, ink fade) map to native augmentations, and ~30 further
@@ -218,8 +218,12 @@ defaults and ranges is in `document_gen/models/distress.py`). Each effect
 without a dedicated numeric parameter carries a 0-1 intensity that scales
 its augmentation parameters (0 = off). A subtle warp
 and a focus-loss blur have no augraphy equivalent and remain custom OpenCV
-tail stages. The seed drives the whole augraphy pipeline (explicit `--seed`
-or the company seed), so stain positions are reproducible per seed.
+tail stages. Every effect is driven by its own plain-number seed (a
+per-effect seed map; an explicit `--seed` is an override that sets every
+effect's seed to that value, otherwise a fresh random seed is created per
+effect), so the same (image, options, effect seeds) tuple always renders
+identically and changing one effect's seed never moves another effect's
+output.
 
 A `--distress-preset` bundles a curated set of effects on top of the
 classic defaults (explicit `--distress*` flags win over preset values):
@@ -229,14 +233,6 @@ classic defaults (explicit `--distress*` flags win over preset values):
 - `fax` — faxify, dithering, low-ink random lines, noise, brightness
 - `archival` — paper aging, vignette, stains, ink bleed, letterpress, ink mottling, bleed-through, watermark
 
-The pre-augraphy hand-rolled stage sequence is preserved verbatim as the
-**legacy** backend (`--distress-backend legacy`): it reproduces old renders
-exactly (stain positions random every run; augraphy-only effects are
-no-ops there). The augraphy backend is **native-only** — augmentations
-are used as-is, so `paper_aging` (mottled tint) and `vignette`
-(light-strip gradient) look different from the legacy stages, and
-`ink_fade` currently has no visible effect on augraphy 8.2.6; use the
-legacy backend for the old look.
 Augraphy also writes a small LRU cache to `augraphy_cache/` in the working
 directory at runtime (gitignored).
 
@@ -247,10 +243,6 @@ uv run document-gen image --company-id 1 --document "Onboarding Guide"
 # Content-sized page, distressed to look like a scanned document
 uv run document-gen image --company-id 1 --document "Operations Report" \
     --no-a4 --distress --distress-preset scanned --seed 42
-
-# Reproduce the pre-augraphy (legacy) distressed look
-uv run document-gen image --company-id 1 --document "Operations Report" \
-    --no-a4 --distress --distress-backend legacy --stain-count 6 --seed 42
 ```
 
 The same output-directory resolution rules as the PDF command apply.
@@ -267,22 +259,22 @@ untouched render is preserved as `<stem>_original.png` next to the document
 `gen_tracing.stages.distress.original_path`) — even when distress was
 disabled at generation time. The document view dialog then
 shows a distress toolbar — a slider per effect (grouped into Ink / Paper /
-Post sections; 0 = off, and for JPEG quality 100 = off) that always renders
-with the augraphy backend — that re-renders the stored original
-server-side on every (debounced) change, so the preview is exactly what
-gets persisted. The toolbar also offers:
+Post sections; 0 = off, and for JPEG quality 100 = off) that re-renders the
+stored original server-side on every (debounced) change, so the preview is
+exactly what gets persisted. The toolbar also offers:
 
-- a **seed** input (blank = a fresh random seed per edit, so each slider
-  move gives a new random render; entering a seed makes renders
-  deterministic),
+- an **override seed** input with an **Apply** button (a number copies it
+  into every effect's seed, making renders deterministic; blank restores
+  the per-effect internal seeds — the seeds first derived from the saved
+  state or the generation trace, or fresh random),
 - a **Randomize** button — picks a clean baseline with a random subset of
   3–6 effects (across all sections) at random, clearly-visible severities,
   keeping the current seed choice,
 - a **Reset** button — back to the clean render (all effects off).
 
 **Save** writes the current render over the document file *and* persists
-the editor state (effect options plus the exact pipeline and stain seeds of
-the saved render); reopening the preview reloads that state, so the toolbar
+the editor state (effect options plus the exact per-effect seeds of the
+saved render); reopening the preview reloads that state, so the toolbar
 matches the persisted image and re-renders reproduce it exactly. The
 original stays untouched, so the image remains re-editable (resetting all
 effects and saving restores the clean render). When no original exists

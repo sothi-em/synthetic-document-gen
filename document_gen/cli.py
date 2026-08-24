@@ -16,8 +16,6 @@ from document_gen.document_png import generate_document_image
 
 #: Curated ``--distress-preset`` bundles (applied on top of the flag-derived
 #: ``DistressOptions``; explicit ``--distress*`` flags win over preset values).
-#: Each preset implies ``backend="augraphy"`` (the model default) unless
-#: ``--distress-backend legacy`` is given explicitly.
 _DISTRESS_PRESETS: dict[str, dict[str, object]] = {
     "scanned": {
         "dirty_screen": True,
@@ -210,12 +208,6 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     image_parser.add_argument(
-        "--distress-backend",
-        choices=["augraphy", "legacy"],
-        default=None,
-        help=("Distress rendering engine (with --distress; default: augraphy)"),
-    )
-    image_parser.add_argument(
         "--no-stains",
         action="store_true",
         default=None,
@@ -262,9 +254,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Seed for the distress pass (augraphy backend: drives the whole "
-            "pipeline, including stain positions; legacy backend: stain "
-            "positions are random every run; default: company seed)"
+            "Override seed for the distress pass: sets every per-effect "
+            "seed to this value (default: a fresh random seed per effect)"
         ),
     )
     image_parser.add_argument(
@@ -353,8 +344,6 @@ def _distress_options_from_args(args: argparse.Namespace) -> DistressOptions | N
     options = DistressOptions(enabled=True, seed=args.seed)
     if args.distress_preset:
         options = options.model_copy(update=_DISTRESS_PRESETS[args.distress_preset])
-    if args.distress_backend is not None:
-        options = options.model_copy(update={"backend": args.distress_backend})
     if args.no_stains is not None:
         options.stains = not args.no_stains
     if args.no_vignette is not None:

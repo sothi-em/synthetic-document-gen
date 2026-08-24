@@ -217,11 +217,12 @@ def _check_trace(
 
     # Distress stage: generated images are left undistressed by
     # default (perfect render); the pass only runs when explicitly
-    # enabled. Traced images always record a random distress seed for
-    # the later pass from the live editor.
+    # enabled. Traced images always record a random per-effect seed
+    # map for the later pass from the live editor.
     assert stages["distress"]["enabled"] is False
-    assert isinstance(stages["distress"]["seed"], int)
-    assert 0 <= stages["distress"]["seed"] < 0x7FFFFFFF
+    effect_seeds = stages["distress"]["effect_seeds"]
+    assert set(effect_seeds) == set(document_png.EFFECT_SEED_NAMES)
+    assert all(0 <= v < 0x7FFFFFFF for v in effect_seeds.values())
     assert stages["distress"]["options"]["enabled"] is False
 
 
@@ -370,11 +371,14 @@ class TestGenerateDocumentImage:
 
         # The distress pass changed the PNG (same render, different bytes).
         assert clean.png_path.read_bytes() != distressed.png_path.read_bytes()
-        # The trace stores the options + seed so the PNG is reproducible
-        # from the trace alone.
+        # The trace stores the options + per-effect seeds so the PNG is
+        # reproducible from the trace alone. The explicit override seed
+        # fills every effect seed.
         stage = distressed.gen_tracing["stages"]["distress"]
         assert stage["enabled"] is True
-        assert stage["seed"] == 7
+        assert stage["effect_seeds"] == {
+            name: 7 for name in document_png.EFFECT_SEED_NAMES
+        }
         assert stage["options"] == DistressOptions(enabled=True, seed=7).model_dump(
             mode="json"
         )
@@ -434,21 +438,23 @@ class TestGenerateDocumentImage:
         # No distress pass ran: the persisted document file is the
         # clean render (identical to the stored original).
         assert original.read_bytes() == artifact.png_path.read_bytes()
-        # A random seed for the later editor pass is recorded on the
-        # trace (not the company seed).
-        assert isinstance(stage["seed"], int)
+        # A random per-effect seed map for the later editor pass is
+        # recorded on the trace.
+        assert set(stage["effect_seeds"]) == set(document_png.EFFECT_SEED_NAMES)
 
-    def test_traced_distress_pass_uses_recorded_seed(
+    def test_traced_distress_pass_uses_recorded_seeds(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Traced images without an explicit seed get a fresh random
-        # distress seed (not the company seed), recorded on the trace
-        # and used by the pass.
+        # Traced images without an explicit override get a fresh random
+        # per-effect seed map, recorded on the trace and used by the
+        # pass.
         backend = FakeBackend()
-        seen: dict[str, int] = {}
+        seen: dict[str, dict[str, int]] = {}
 
-        def fake_distress(path: Path, options: Any, seed: int) -> None:
-            seen["seed"] = seed
+        def fake_distress(
+            path: Path, options: Any, effect_seeds: dict[str, int]
+        ) -> None:
+            seen["effect_seeds"] = effect_seeds
 
         monkeypatch.setattr(document_png, "distress_image", fake_distress)
         artifact = _run(
@@ -459,21 +465,21 @@ class TestGenerateDocumentImage:
             gen_tracing=True,
         )
         stage = artifact.gen_tracing["stages"]["distress"]
-        assert isinstance(stage["seed"], int)
-        assert seen["seed"] == stage["seed"]
+        assert set(stage["effect_seeds"]) == set(document_png.EFFECT_SEED_NAMES)
+        assert seen["effect_seeds"] == stage["effect_seeds"]
 
-    def test_untraced_distress_pass_records_no_seed_when_disabled(
+    def test_untraced_distress_pass_records_no_seeds_when_disabled(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Without tracing (and with the pass disabled), no seed is
+        # Without tracing (and with the pass disabled), no seed map is
         # recorded.
         backend = FakeBackend()
         artifact = _run(tmp_path, monkeypatch, backend)
         stage = artifact.gen_tracing["stages"]["distress"]
         assert stage["enabled"] is False
-        assert stage["seed"] is None
+        assert stage["effect_seeds"] is None
 
-    def test_distress_seed_falls_back_to_company_seed(
+    def test_untraced_distress_pass_gets_random_effect_seeds(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         backend = FakeBackend()
@@ -483,9 +489,10 @@ class TestGenerateDocumentImage:
             backend,
             distress=DistressOptions(enabled=True),
         )
-        # No explicit seed, no tracing: the company seed (42) is
-        # recorded.
-        assert artifact.gen_tracing["stages"]["distress"]["seed"] == 42
+        # No override, no tracing: a fresh random per-effect seed map
+        # is recorded.
+        effect_seeds = artifact.gen_tracing["stages"]["distress"]["effect_seeds"]
+        assert set(effect_seeds) == set(document_png.EFFECT_SEED_NAMES)
 
     def test_figure_extraction_heuristic_and_llm_fallback(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

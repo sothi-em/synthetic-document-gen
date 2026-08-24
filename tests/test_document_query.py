@@ -467,34 +467,29 @@ class TestReportDocuments:
         doc_id = document_query.save_document(company_id, report_id, file_path)
 
         options = {"enabled": True, "stains": True, "stain_count": 3}
+        effect_seeds = {"stains": 42, "warp": 123}
         file_path.write_bytes(b"x" * 3072)
-        updated = document_query.save_document_distress(
-            doc_id, options, seed=42, stain_seed=123
-        )
+        updated = document_query.save_document_distress(doc_id, options, effect_seeds)
         assert updated is not None
         assert updated["distress"] == {
             "options": options,
-            "seed": 42,
-            "stain_seed": 123,
+            "effect_seeds": effect_seeds,
         }
         # The size refresh happens in the same update.
         assert updated["size_kb"] == 3.0
         listed = document_query.get_document(doc_id)
         assert listed is not None
-        assert listed["distress"]["seed"] == 42
+        assert listed["distress"]["effect_seeds"] == effect_seeds
 
     def test_save_document_distress_missing(self, tmp_path) -> None:
-        assert (
-            document_query.save_document_distress(999999, {}, seed=1, stain_seed=2)
-            is None
-        )
+        assert document_query.save_document_distress(999999, {}, {"stains": 1}) is None
         company_id, report_id = self._company_with_report()
         file_path = tmp_path / "acme_guide.png"
         file_path.write_bytes(b"x")
         doc_id = document_query.save_document(company_id, report_id, file_path)
         file_path.unlink()
         with pytest.raises(FileNotFoundError):
-            document_query.save_document_distress(doc_id, {}, seed=1, stain_seed=2)
+            document_query.save_document_distress(doc_id, {}, {"stains": 1})
 
     def test_get_document_type_id(self) -> None:
         company_id, report_id = self._company_with_report()

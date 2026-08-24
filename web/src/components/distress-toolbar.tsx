@@ -13,7 +13,6 @@ import {
 import {
   api,
   originalImagePath,
-  stainSeedFor,
   type DistressOptions,
   type DocumentRecord,
 } from "@/lib/api"
@@ -28,12 +27,11 @@ import { Slider } from "@/components/ui/slider"
  * backend does). Used only when the document has no generation trace
  * at all, in which case the toolbar is disabled anyway. Kept so the
  * backend defaults stay documented in one place; the disabled toolbar
- * shows the clean baseline instead (see `initialOptions`), so no
+ * shows the clean baseline instead (see `initialEditorState`), so no
  * effect counters appear for images that were never distressed.
  */
 const DEFAULT_OPTIONS: DistressOptions = {
   enabled: true,
-  backend: "augraphy",
   paper_aging: true,
   paper_aging_intensity: 1,
   vignette: true,
@@ -397,45 +395,42 @@ function distressTrace(
 
 /**
  * Editor state persisted by the distress save endpoint (options plus
- * the exact seeds of the saved render), or `null` when the image has
- * never been distressed and saved from the preview editor.
+ * the exact per-effect seeds of the saved render), or `null` when the
+ * image has never been distressed and saved from the preview editor.
+ *
+ * Records saved before the per-effect rework carry a single global
+ * `seed` (and a `stain_seed`) instead of `effect_seeds`; the old seed
+ * is surfaced as `legacySeed` so the caller can fill every effect seed
+ * with it.
  */
-function savedDistress(
-  doc: DocumentRecord,
-): { options: DistressOptions; seed: number; stainSeed: number } | null {
+function savedDistress(doc: DocumentRecord): {
+  options: DistressOptions
+  effectSeeds: Record<string, number> | null
+  legacySeed: number | null
+} | null {
   const d = doc.distress
   if (typeof d !== "object" || d === null) return null
   if (typeof d.options !== "object" || d.options === null) return null
-  if (typeof d.seed !== "number" || typeof d.stain_seed !== "number") return null
   const raw = d.options as Partial<DistressOptions>
-  return {
-    options: resolveIntensities(raw, {
-      ...CLEAN_OPTIONS,
-      ...raw,
-      enabled: true,
-    }),
-    seed: d.seed,
-    stainSeed: d.stain_seed,
+  const options = resolveIntensities(raw, {
+    ...CLEAN_OPTIONS,
+    ...raw,
+    enabled: true,
+  })
+  const es = d.effect_seeds
+  if (typeof es === "object" && es !== null) {
+    return {
+      options,
+      effectSeeds: fillMissingSeeds(es as Record<string, number>),
+      legacySeed: null,
+    }
   }
+  // Pre-rework record: single global seed (always present there).
+  const legacy = d as { seed?: unknown }
+  const legacySeed = typeof legacy.seed === "number" ? legacy.seed : null
+  return { options, effectSeeds: null, legacySeed }
 }
 
-/**
- * Starting state for the toolbar. Images distressed and saved from the
- * preview editor load the persisted editor state (options + the exact
- * pipeline seed of the saved render), so the toolbar matches the
- * persisted image and moving one slider re-renders the rest
- * identically. Images with a generation trace that recorded distress
- * fall back to the trace's options (seed pinned to the one used at
- * generation). Traced images whose generation-time pass was disabled
- * pin to the random seed created at generation time (when present)
- * instead of starting blank. Options that predate the intensity fields
- * get their intensities derived from the flags (on -> 1, off -> 0).
- * Everything else starts from :const:`CLEAN_OPTIONS` — all flags
- * false, values at their off point, blank seed. `enabled` stays on so individual sliders
- * take effect immediately. Untraced documents (toolbar disabled anyway)
- * also start from the clean baseline, so no effect counters appear for
- * images that were never distressed.
- */
 /**
  * Legacy normalization: renders saved before the JPEG off-point moved to
  * 100 carry the effect off at a lower quality (e.g. 95); snap them to the
@@ -448,43 +443,106 @@ function normalizeJpegOff(o: DistressOptions): DistressOptions {
   return o
 }
 
-function initialOptions(doc: DocumentRecord): DistressOptions {
+/**
+ * Canonical per-effect seed names: every effect that draws from a PRNG
+ * stream (mirrors `document_gen.generators.png_gen.EFFECT_SEED_NAMES`).
+ * `ink_fade` only scales the overlay alpha and `blur` is deterministic,
+ * so neither carries a seed.
+ */
+const EFFECT_SEED_NAMES: string[] = [...INK_EFFECTS, ...PAPER_EFFECTS, ...POST_EFFECTS]
+  .map((e) => e.key)
+  .filter((k) => k !== "ink_fade" && k !== "blur")
+
+/** Fresh non-negative random seed (matches the backend's seed range). */
+function randomSeed(): number {
+  return Math.floor(Math.random() * 0x7fffffff)
+}
+
+/** Fresh random per-effect seed map (one plain number per effect). */
+function randomEffectSeeds(): Record<string, number> {
+  const seeds: Record<string, number> = {}
+  for (const name of EFFECT_SEED_NAMES) seeds[name] = randomSeed()
+  return seeds
+}
+
+/** Fill any missing effect names with fresh random seeds. */
+function fillMissingSeeds(seeds: Record<string, number>): Record<string, number> {
+  const next = { ...seeds }
+  for (const name of EFFECT_SEED_NAMES) {
+    if (!Number.isFinite(next[name])) next[name] = randomSeed()
+  }
+  return next
+}
+
+/** Fill every effect seed with a single (override) value. */
+function fillAllSeeds(seed: number): Record<string, number> {
+  const seeds: Record<string, number> = {}
+  for (const name of EFFECT_SEED_NAMES) seeds[name] = seed
+  return seeds
+}
+
+/**
+ * Starting state for the toolbar: options (carrying the last override
+ * seed) plus the per-effect seed map the render uses.
+ *
+ * Priority for the seed map: persisted editor state (exact seeds of
+ * the saved render) -> generation trace `effect_seeds` -> fresh random
+ * per effect. Pre-rework records/traces carry a single global `seed`
+ * instead; when present it fills every effect seed (reproducibility),
+ * otherwise fresh random per-effect seeds are used.
+ *
+ * Traced images whose generation-time pass was disabled start from the
+ * clean baseline (all flags false, blank override) instead of the
+ * defaults, so the toolbar reflects that the image was generated
+ * undistressed. Untraced documents (toolbar disabled anyway) also
+ * start from the clean baseline, so no effect counters appear for
+ * images that were never distressed.
+ */
+function initialEditorState(doc: DocumentRecord): {
+  options: DistressOptions
+  effectSeeds: Record<string, number>
+} {
   const saved = savedDistress(doc)
-  if (saved !== null)
-    return normalizeJpegOff({ ...saved.options, seed: saved.seed })
+  if (saved !== null) {
+    const effectSeeds =
+      saved.effectSeeds ??
+      (saved.legacySeed !== null ? fillAllSeeds(saved.legacySeed) : randomEffectSeeds())
+    return { options: normalizeJpegOff(saved.options), effectSeeds }
+  }
   const trace = distressTrace(doc)
-  if (trace === null) return { ...CLEAN_OPTIONS, enabled: true }
+  if (trace === null) {
+    return {
+      options: { ...CLEAN_OPTIONS, enabled: true },
+      effectSeeds: randomEffectSeeds(),
+    }
+  }
+  const effectSeeds =
+    typeof trace.effect_seeds === "object" && trace.effect_seeds !== null
+      ? fillMissingSeeds(trace.effect_seeds as Record<string, number>)
+      : typeof trace.seed === "number"
+        ? fillAllSeeds(trace.seed)
+        : randomEffectSeeds()
   const enabled = typeof trace.enabled === "boolean" ? trace.enabled : false
   if (!enabled) {
-    // Traced images carry a random distress seed created at generation
-    // time; pin to it so later distress passes are deterministic.
-    const seed = typeof trace.seed === "number" ? trace.seed : null
-    return { ...CLEAN_OPTIONS, enabled: true, seed }
+    return { options: { ...CLEAN_OPTIONS, enabled: true }, effectSeeds }
   }
   const raw = trace.options
   if (typeof raw !== "object" || raw === null) {
-    return { ...CLEAN_OPTIONS, enabled: true }
+    return { options: { ...CLEAN_OPTIONS, enabled: true }, effectSeeds }
   }
   const o = raw as Partial<DistressOptions>
-  const seed =
-    typeof o.seed === "number"
-      ? o.seed
-      : typeof trace.seed === "number"
-        ? trace.seed
-        : null
-  return normalizeJpegOff(
-    resolveIntensities(o, {
-      ...CLEAN_OPTIONS,
-      ...o,
-      enabled: true,
-      seed,
-    }),
-  )
-}
-
-/** Fresh non-negative random seed for blank-seed (random) mode. */
-function randomSeed(): number {
-  return Math.floor(Math.random() * 0x7fffffff)
+  const seed = typeof o.seed === "number" ? o.seed : null
+  return {
+    options: normalizeJpegOff(
+      resolveIntensities(o, {
+        ...CLEAN_OPTIONS,
+        ...o,
+        enabled: true,
+        seed,
+      }),
+    ),
+    effectSeeds,
+  }
 }
 
 /**
@@ -560,8 +618,14 @@ interface DistressToolbarProps {
  * Effects are grouped into three collapsible sections (Ink / Paper /
  * Post) mirroring the augraphy pipeline phases. Every effect is a
  * single slider: the effect flag is derived from the slider value
- * (0 = off; JPEG quality: 100 = off) and the toolbar always renders
- * with the augraphy backend.
+ * (0 = off; JPEG quality: 100 = off).
+ *
+ * Rendering is driven by a per-effect seed map (one plain-number seed
+ * per effect, always sent with preview/save requests). The seed input
+ * is an explicit override: entering a number and pressing Apply copies
+ * it into every effect's seed; leaving it blank restores the
+ * per-effect internal seeds (the map first derived from the saved
+ * state or the generation trace, or fresh random).
  */
 export function DistressToolbar({
   doc,
@@ -570,8 +634,15 @@ export function DistressToolbar({
   onSaved,
 }: DistressToolbarProps) {
   const editable = originalImagePath(doc) !== null
-  const [options, setOptions] = useState<DistressOptions>(() =>
-    initialOptions(doc),
+  const [initial] = useState(() => initialEditorState(doc))
+  const [options, setOptions] = useState<DistressOptions>(initial.options)
+  /** Per-effect seeds the render uses (always sent to the server). */
+  const [effectSeeds, setEffectSeeds] = useState<Record<string, number>>(
+    initial.effectSeeds,
+  )
+  /** Override-seed input text (applied explicitly via the Apply button). */
+  const [seedInput, setSeedInput] = useState(
+    initial.options.seed === null ? "" : String(initial.options.seed),
   )
   /** Effect sections start collapsed; the active-effect badges still show counts. */
   const [openSections, setOpenSections] = useState<Record<SectionKey, boolean>>(
@@ -583,72 +654,49 @@ export function DistressToolbar({
   /** Monotonic id so stale preview responses are dropped. */
   const requestRef = useRef(0)
   /**
-   * Options as last rendered (or shown on open). The preview effect only
-   * fires when this changes, so opening the dialog just displays the
-   * persisted image — no re-render (also StrictMode-safe: the effect's
-   * double invocation on mount sees unchanged options and skips).
+   * The per-effect seeds as first derived (saved state, trace, or
+   * fresh random). "Apply" with a blank override restores these.
    */
-  const lastOptionsRef = useRef(options)
+  const internalSeedsRef = useRef(initial.effectSeeds)
   /**
-   * Stain seed for deterministic renders: the persisted one when the
-   * image was already distressed and saved (so re-renders match the
-   * saved image), otherwise derived from the document id.
+   * (options, effectSeeds) as last rendered (or shown on open). The
+   * preview effect only fires when this pair changes, so opening the
+   * dialog just displays the persisted image — no re-render, no
+   * request (also StrictMode-safe: the effect's double invocation on
+   * mount sees the unchanged pair and skips).
    */
-  const stainSeedRef = useRef<number>(
-    savedDistress(doc)?.stainSeed ?? stainSeedFor(doc.id),
-  )
-  /**
-   * Ephemeral seeds for blank-seed (random) mode: regenerated on every
-   * options change so each slider move gives a new random render, and
-   * held stable afterwards so save persists exactly what the preview
-   * showed.
-   */
-  const ephemeralSeedsRef = useRef<{ seed: number; stainSeed: number } | null>(
-    null,
-  )
-
-  /**
-   * Seeds for the next preview/save request. A user-entered seed is
-   * deterministic (with the pinned stain seed); a blank seed uses the
-   * ephemeral random pair (refreshed per options change).
-   */
-  const seedsFor = (options: DistressOptions): { seed: number; stainSeed: number } => {
-    if (options.seed !== null) {
-      return { seed: options.seed, stainSeed: stainSeedRef.current }
-    }
-    if (ephemeralSeedsRef.current === null) {
-      ephemeralSeedsRef.current = { seed: randomSeed(), stainSeed: randomSeed() }
-    }
-    return ephemeralSeedsRef.current
-  }
+  const lastRenderRef = useRef<{
+    options: DistressOptions
+    effectSeeds: Record<string, number>
+  }>({
+    options: initial.options,
+    effectSeeds: initial.effectSeeds,
+  })
 
   useEffect(() => {
     onBusyChange?.(busy)
   }, [busy, onBusyChange])
 
   // Live preview loop: debounce ~300 ms per control change, then ask the
-  // server to re-distress the stored original with the current options.
-  // Only fires when the options actually change — on open (and on
-  // StrictMode's double effect invocation) the dialog just shows the
-  // persisted (saved) render, which matches the initial options.
+  // server to re-distress the stored original with the current options
+  // and per-effect seeds. Only fires when the (options, effectSeeds)
+  // pair actually changes — on open (and on StrictMode's double effect
+  // invocation) the dialog just shows the persisted (saved) render,
+  // which matches the initial pair.
   useEffect(() => {
     if (!editable) return
-    if (options === lastOptionsRef.current) return
-    lastOptionsRef.current = options
-    if (options.seed === null) {
-      ephemeralSeedsRef.current = { seed: randomSeed(), stainSeed: randomSeed() }
-    }
+    const last = lastRenderRef.current
+    if (last.options === options && last.effectSeeds === effectSeeds) return
+    lastRenderRef.current = { options, effectSeeds }
     const reqId = ++requestRef.current
     setBusy(true)
     setError(null)
     const timer = setTimeout(() => {
       void (async () => {
         try {
-          const seeds = seedsFor(options)
           const blob = await api.distressPreview(doc.id, {
             distress: options,
-            seed: seeds.seed,
-            stain_seed: seeds.stainSeed,
+            effect_seeds: effectSeeds,
           })
           if (requestRef.current === reqId) onPreview(blob)
         } catch (err) {
@@ -661,17 +709,15 @@ export function DistressToolbar({
       })()
     }, 300)
     return () => clearTimeout(timer)
-  }, [options, editable, doc.id, onPreview]) // eslint-disable-line react-hooks/exhaustive-deps -- doc fields are stable per id
+  }, [options, effectSeeds, editable, doc.id, onPreview]) // eslint-disable-line react-hooks/exhaustive-deps -- doc fields are stable per id
 
   const handleSave = async () => {
     setBusy(true)
     setError(null)
     try {
-      const seeds = seedsFor(options)
       const updated = await api.distressSave(doc.id, {
         distress: options,
-        seed: seeds.seed,
-        stain_seed: seeds.stainSeed,
+        effect_seeds: effectSeeds,
       })
       setJustSaved(true)
       onSaved?.(updated)
@@ -687,6 +733,26 @@ export function DistressToolbar({
     const timer = setTimeout(() => setJustSaved(false), 1500)
     return () => clearTimeout(timer)
   }, [justSaved])
+
+  /**
+   * Apply the override seed: a number copies it into every effect's
+   * seed; blank restores the per-effect internal seeds (and clears the
+   * recorded override).
+   */
+  const handleApplySeed = () => {
+    const raw = seedInput.trim()
+    if (raw === "") {
+      setOptions((o) => ({ ...o, seed: null }))
+      setEffectSeeds({ ...internalSeedsRef.current })
+      setSeedInput("")
+      return
+    }
+    const value = Number.parseInt(raw, 10)
+    if (Number.isNaN(value)) return
+    setOptions((o) => ({ ...o, seed: value }))
+    setEffectSeeds(fillAllSeeds(value))
+    setSeedInput(String(value))
+  }
 
   /** Write a slider value: set the intensity/numeric field and derive the flag. */
   const applyEffectValue = (e: EffectDef, value: number) => {
@@ -720,25 +786,33 @@ export function DistressToolbar({
               (editable ? "text-foreground" : "text-muted-foreground")
             }
           >
-            Seed (blank = random)
+            Override seed (blank = per-effect random)
           </span>
-          <Input
-            className="h-8"
-            inputMode="numeric"
-            placeholder="random"
-            value={options.seed === null ? "" : String(options.seed)}
-            disabled={!editable}
-            onChange={(e) => {
-              const raw = e.target.value.trim()
-              if (raw === "") {
-                setOptions((o) => ({ ...o, seed: null }))
-                return
-              }
-              const value = Number.parseInt(raw, 10)
-              if (Number.isNaN(value)) return
-              setOptions((o) => ({ ...o, seed: value }))
-            }}
-          />
+          <div className="flex gap-1">
+            <Input
+              className="h-8"
+              inputMode="numeric"
+              placeholder="random"
+              value={seedInput}
+              disabled={!editable}
+              onChange={(e) => setSeedInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault()
+                  handleApplySeed()
+                }
+              }}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 shrink-0"
+              disabled={!editable || busy}
+              onClick={handleApplySeed}
+            >
+              Apply
+            </Button>
+          </div>
         </div>
         {SECTIONS.map((section) => {
           const open = openSections[section.key]
@@ -855,7 +929,9 @@ export function DistressToolbar({
           variant="outline"
           size="sm"
           disabled={!editable || busy}
-          onClick={() => setOptions({ ...CLEAN_OPTIONS, enabled: true })}
+          onClick={() =>
+            setOptions({ ...CLEAN_OPTIONS, enabled: true, seed: options.seed })
+          }
         >
           <RotateCcw />
           Reset

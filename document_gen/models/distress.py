@@ -15,8 +15,6 @@ out-of-range values are rejected).
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -89,14 +87,12 @@ class DistressOptions(BaseModel):
     """Per-effect controls for the PNG distress pass.
 
     With ``enabled=False`` the pipeline skips the pass entirely and the
-    PNG is left as a perfect render. ``backend`` selects the rendering
-    engine: ``"augraphy"`` (default) runs the augraphy augmentation
-    pipeline, where ``seed`` drives the whole pipeline (so stain
-    positions are reproducible); ``"legacy"`` runs the preserved
-    pre-augraphy hand-rolled stage sequence, where stain positions are
-    intentionally random on every run unless a stain seed is given and
-    the augraphy-only toggles are ignored. When ``seed`` is ``None``
-    the pipeline falls back to the company seed.
+    PNG is left as a perfect render. The pass itself is driven by
+    per-effect seeds (one plain-number seed per effect, supplied by the
+    caller as an ``effect_seeds`` map); ``seed`` here is only a record
+    of the last user-applied override seed (``None`` = no override, the
+    per-effect internal seeds are in use) and the render never reads
+    it.
 
     Each augraphy effect is gated on ``flag and intensity > 0`` and its
     augraphy parameters are scaled by the resolved intensity (0-1;
@@ -110,15 +106,6 @@ class DistressOptions(BaseModel):
     enabled: bool = Field(
         description="Master switch; False = perfect (undistressed) image.",
         default=False,
-    )
-    backend: Literal["augraphy", "legacy"] = Field(
-        description=(
-            'Rendering engine: "augraphy" (default) runs the augraphy '
-            'augmentation pipeline; "legacy" runs the preserved '
-            "pre-augraphy hand-rolled stages (augraphy-only toggles are "
-            "no-ops there)."
-        ),
-        default="augraphy",
     )
     paper_aging: bool = Field(description="Cream/beige paper tint.", default=True)
     paper_aging_intensity: float | None = _intensity_field()
@@ -156,8 +143,10 @@ class DistressOptions(BaseModel):
     )
     seed: int | None = Field(
         description=(
-            "Random seed for the noise and warp stages (stain positions "
-            "are intentionally unseeded); None = company seed."
+            "Last override seed: the value the user last applied from "
+            "the editor (copied into every effect's seed). Record only "
+            "- the render never reads it; None = no override, the "
+            "per-effect internal seeds are in use."
         ),
         default=None,
     )

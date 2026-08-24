@@ -149,8 +149,6 @@ export interface ExcelJobResult {
 export interface DistressOptions {
   /** Master switch; false = perfect (undistressed) image. */
   enabled: boolean
-  /** Rendering engine: "augraphy" (default) or "legacy". */
-  backend: "augraphy" | "legacy"
   paper_aging: boolean
   paper_aging_intensity: number
   vignette: boolean
@@ -166,7 +164,12 @@ export interface DistressOptions {
   blur_intensity: number
   warp: boolean
   warp_strength: number
-  /** Random seed; null = company seed. */
+  /**
+   * Last override seed: the value the user last applied from the
+   * editor (copied into every effect's seed). Record only - the render
+   * never reads it; null = no override, per-effect internal seeds in
+   * use.
+   */
   seed: number | null
   // --- ink phase (augraphy backend) ---
   ink_bleed: boolean
@@ -317,13 +320,12 @@ export interface DocumentRecord {
   gen_tracing?: Record<string, unknown> | null
   /**
    * Distress editor state persisted by the save endpoint: the options
-   * plus the exact seeds of the saved render. Absent until the image
-   * has been distressed and saved from the preview editor.
+   * plus the exact per-effect seeds of the saved render. Absent until
+   * the image has been distressed and saved from the preview editor.
    */
   distress?: {
     options: DistressOptions
-    seed: number
-    stain_seed: number
+    effect_seeds: Record<string, number>
   } | null
 }
 
@@ -362,25 +364,15 @@ export function originalImagePath(doc: DocumentRecord): string | null {
   return typeof original === "string" && original ? original : null
 }
 
-/** Deterministic stain seed derived from the document id.
- *
- * Preview and save must always use the same value so the browser
- * preview is byte-identical to what the server persists.
- */
-export function stainSeedFor(docId: number): number {
-  return docId * 1000003
-}
-
 /** Body for the distress preview/save endpoints. */
 export interface DistressEditBody {
   distress: DistressOptions
   /**
-   * Noise/warp seed: the user-entered seed when set, otherwise a fresh
-   * random one per edit (blank seed = randomized render).
+   * Per-effect seed map (one plain-number seed per effect; mirrors
+   * `document_gen.generators.png_gen.EFFECT_SEED_NAMES`). The render
+   * always uses these seeds.
    */
-  seed: number
-  /** Stain seed: deterministic per document (see `stainSeedFor`) or random. */
-  stain_seed: number
+  effect_seeds: Record<string, number>
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {

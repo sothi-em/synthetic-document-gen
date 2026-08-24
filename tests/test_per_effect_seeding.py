@@ -1,123 +1,110 @@
-"""Per-effect seeding tests for the augraphy distress pipeline.
+"""Tests for per-effect distress seeding.
 
-Each effect must draw from its own PRNG stream derived from the base
-seed, so changing one effect's parameters never moves another effect's
-random output, while the same (image, options, seed, stain_seed) tuple
-still produces identical output.
-
-Requires augraphy and cv2 (available in the project venv).
+Every effect draws from its own entry in the per-effect seed map, so
+the same (image, options, effect_seeds) tuple always produces the same
+output, and changing one effect's seed only moves that effect's random
+output.
 """
 
 import numpy as np
 import pytest
 
-augraphy = pytest.importorskip("augraphy")
-cv2 = pytest.importorskip("cv2")
-
-from document_gen.generators.png_gen import distress_array
-from document_gen.models.distress import DistressOptions
-
-#: Flat white page: uniform pixels compress losslessly under JPEG, so
-#: the JPEG stage is a visual no-op and any output difference between
-#: two JPEG qualities is purely the downstream effects being redrawn.
-_PAGE = np.full((300, 300, 3), 255, dtype=np.uint8)
+from document_gen.generators.png_gen import (
+    EFFECT_SEED_NAMES,
+    distress_array,
+    distress_image_to_bytes,
+    random_effect_seeds,
+)
+from document_gen.models import DistressOptions
 
 
-def _options(**kwargs) -> DistressOptions:
-    """Enabled options with all default-on effects turned off.
-
-    Only the effects named in *kwargs* (plus enabled=True) are active,
-    so renders contain exactly the effects under test.
-    """
-    base = dict(
-        enabled=True,
-        paper_aging=False,
-        vignette=False,
-        stains=False,
-        noise=False,
-        ink_fade=False,
-        blur=False,
-    )
+def _options(**kwargs):
+    base = {"enabled": True}
     base.update(kwargs)
     return DistressOptions(**base)
 
 
-def test_determinism_same_inputs_same_output():
-    """Same (image, options, seed, stain_seed) rendered twice is identical."""
-    options = _options(scribbles=True, scribbles_intensity=1.0, noise=True)
-    out1 = distress_array(_PAGE, options, seed=42, stain_seed=7)
-    out2 = distress_array(_PAGE, options, seed=42, stain_seed=7)
-    assert np.array_equal(out1, out2)
+def _seeds(**overrides):
+    """A fixed per-effect seed map (deterministic across calls)."""
+    seeds = {name: i + 1 for i, name in enumerate(EFFECT_SEED_NAMES)}
+    seeds.update(overrides)
+    return seeds
 
 
-def test_effect_independence_upstream_effect_does_not_move_scribbles():
-    """Toggling an upstream effect must not redraw the scribbles.
+class TestPerEffectSeeding:
+    def test_seed_reproducible(self):
+        clean = np.full((60, 60, 3), 255, dtype=np.uint8)
+        options = _options(
+            paper_aging=True, stains=True, noise_texturize=True, warp=True
+        )
+        a = distress_array(clean, options, _seeds())
+        b = distress_array(clean, options, _seeds())
+        assert np.array_equal(a, b)
 
-    Regression test for the shared-PRNG-stream defect: with a flat page
-    the JPEG stage is a visual no-op (uniform pixels compress
-    losslessly), so "scribbles only" and "jpeg + scribbles" must be
-    pixel-identical. Under the old shared stream the JPEG stage's random
-    draws shifted where the scribbles drew theirs, landing the strokes
-    in different positions.
-    """
-    out_scribbles = distress_array(
-        _PAGE,
-        _options(scribbles=True, scribbles_intensity=1.0),
-        seed=42,
-        stain_seed=7,
-    )
-    out_jpeg_scribbles = distress_array(
-        _PAGE,
-        _options(
-            jpeg_artifacts=True,
-            jpeg_quality=50,
-            scribbles=True,
-            scribbles_intensity=1.0,
-        ),
-        seed=42,
-        stain_seed=7,
-    )
-    assert np.array_equal(out_scribbles, out_jpeg_scribbles)
+    def test_seed_changes_output(self):
+        clean = np.full((60, 60, 3), 255, dtype=np.uint8)
+        options = _options(paper_aging=True, stains=True)
+        a = distress_array(clean, options, _seeds(stains=1, noise_texturize=1))
+        b = distress_array(clean, options, _seeds(stains=2, noise_texturize=2))
+        assert not np.array_equal(a, b)
 
+    def test_stains_seed_reproducible(self):
+        clean = np.full((60, 60, 3), 255, dtype=np.uint8)
+        a = distress_array(clean, _options(stains=True), _seeds(stains=7))
+        b = distress_array(clean, _options(stains=True), _seeds(stains=7))
+        assert np.array_equal(a, b)
 
-def test_effect_independence_jpeg_quality_does_not_move_scribbles():
-    """Changing the JPEG quality (upstream) must not redraw scribbles.
+    def test_stains_seed_changes_output(self):
+        clean = np.full((60, 60, 3), 255, dtype=np.uint8)
+        a = distress_array(clean, _options(stains=True), _seeds(stains=7))
+        b = distress_array(clean, _options(stains=True), _seeds(stains=8))
+        assert not np.array_equal(a, b)
 
-    With a flat page the JPEG stage is a visual no-op at any quality,
-    so the two renders must be pixel-identical even though the JPEG
-    stage draws different quality parameters at each setting.
-    """
-    out_a = distress_array(
-        _PAGE,
-        _options(
-            jpeg_artifacts=True,
-            jpeg_quality=50,
-            scribbles=True,
-            scribbles_intensity=1.0,
-        ),
-        seed=42,
-        stain_seed=7,
-    )
-    out_b = distress_array(
-        _PAGE,
-        _options(
-            jpeg_artifacts=True,
-            jpeg_quality=90,
-            scribbles=True,
-            scribbles_intensity=1.0,
-        ),
-        seed=42,
-        stain_seed=7,
-    )
-    assert np.array_equal(out_a, out_b)
+    def test_combined_seeds_reproducible(self):
+        clean = np.full((60, 60, 3), 255, dtype=np.uint8)
+        options = _options(stains=True, noise_texturize=True)
+        a = distress_array(clean, options, _seeds(stains=7, noise_texturize=3))
+        b = distress_array(clean, options, _seeds(stains=7, noise_texturize=3))
+        assert np.array_equal(a, b)
+
+    def test_missing_seed_falls_back_to_zero(self):
+        clean = np.full((60, 60, 3), 255, dtype=np.uint8)
+        options = _options(stains=True, warp=True)
+        a = distress_array(clean, options, {})
+        b = distress_array(clean, options, {})
+        assert np.array_equal(a, b)
 
 
-def test_seed_sensitivity_different_base_seeds_differ():
-    """Different base seeds produce different random output."""
-    out_a = distress_array(
-        _PAGE, _options(scribbles=True, scribbles_intensity=1.0), seed=42
-    )
-    out_b = distress_array(
-        _PAGE, _options(scribbles=True, scribbles_intensity=1.0), seed=43
-    )
-    assert not np.array_equal(out_a, out_b)
+class TestRandomEffectSeeds:
+    def test_covers_all_effect_names(self):
+        seeds = random_effect_seeds()
+        assert set(seeds) == set(EFFECT_SEED_NAMES)
+        assert all(isinstance(v, int) for v in seeds.values())
+        assert all(0 <= v < 0x7FFFFFFF for v in seeds.values())
+
+    def test_fresh_each_call(self):
+        a = random_effect_seeds()
+        b = random_effect_seeds()
+        assert a != b
+
+
+class TestDistressImageToBytesSeeding:
+    @staticmethod
+    def _data():
+        import cv2
+
+        ok, encoded = cv2.imencode(".png", np.full((60, 60, 3), 255, dtype=np.uint8))
+        assert ok
+        return encoded.tobytes()
+
+    def test_stains_seed_reproducible(self):
+        data = self._data()
+        a = distress_image_to_bytes(data, _options(stains=True), _seeds(stains=7))
+        b = distress_image_to_bytes(data, _options(stains=True), _seeds(stains=7))
+        assert a == b
+
+    def test_stains_seed_changes_output(self):
+        data = self._data()
+        a = distress_image_to_bytes(data, _options(stains=True), _seeds(stains=7))
+        b = distress_image_to_bytes(data, _options(stains=True), _seeds(stains=8))
+        assert a != b

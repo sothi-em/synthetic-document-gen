@@ -361,10 +361,10 @@ class TestDistressOptions:
         restored = DistressOptions.model_validate_json(options.model_dump_json())
         assert restored == options
 
-    def test_backend_default_and_dump(self) -> None:
+    def test_default_dump(self) -> None:
         dumped = DistressOptions().model_dump()
-        assert dumped["backend"] == "augraphy"
-        # Every new augraphy toggle defaults to False (enabling one never
+        assert dumped["seed"] is None
+        # Every augraphy toggle defaults to False (enabling one never
         # changes an existing render's output).
         new_toggles = [
             "ink_bleed",
@@ -439,13 +439,16 @@ class TestDistressOptions:
         options = DistressOptions(watermark_word="x" * 100)
         assert len(options.watermark_word) == 40
 
-    def test_backend_rejects_unknown_value(self) -> None:
-        with pytest.raises(ValueError):
-            DistressOptions(backend="bogus")
+    def test_legacy_backend_key_ignored(self) -> None:
+        # Pre-rework payloads carry a `backend` key; it is no longer a
+        # field and must be ignored, not rejected.
+        options = DistressOptions.model_validate({"enabled": True, "backend": "legacy"})
+        assert options.enabled is True
+        assert "backend" not in options.model_dump()
 
     def test_legacy_trace_payload_still_validates(self) -> None:
-        # Traces written before the migration contain only the original
-        # fields; they must validate with backend defaulting to "augraphy".
+        # Traces written before the rework contain only the original
+        # fields; they must still validate.
         payload = (
             '{"enabled": true, "paper_aging": true, "vignette": true, '
             '"vignette_strength": 0.3, "stains": true, "stain_count": 4, '
@@ -453,7 +456,7 @@ class TestDistressOptions:
             '"blur": true, "warp": false, "warp_strength": 0.5, "seed": 7}'
         )
         options = DistressOptions.model_validate_json(payload)
-        assert options.backend == "augraphy"
+        assert options.seed == 7
         assert options.ink_bleed is False
 
 
