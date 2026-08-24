@@ -426,10 +426,12 @@ function savedDistress(
  * persisted image and moving one slider re-renders the rest
  * identically. Images with a generation trace that recorded distress
  * fall back to the trace's options (seed pinned to the one used at
- * generation). Options that predate the intensity fields get their
- * intensities derived from the flags (on -> 1, off -> 0). Everything
- * else starts from :const:`CLEAN_OPTIONS` — all flags false, values at
- * their off point, blank seed. `enabled` stays on so individual sliders
+ * generation). Traced images whose generation-time pass was disabled
+ * pin to the random seed created at generation time (when present)
+ * instead of starting blank. Options that predate the intensity fields
+ * get their intensities derived from the flags (on -> 1, off -> 0).
+ * Everything else starts from :const:`CLEAN_OPTIONS` — all flags
+ * false, values at their off point, blank seed. `enabled` stays on so individual sliders
  * take effect immediately. Untraced documents (toolbar disabled anyway)
  * also start from the clean baseline, so no effect counters appear for
  * images that were never distressed.
@@ -453,7 +455,12 @@ function initialOptions(doc: DocumentRecord): DistressOptions {
   const trace = distressTrace(doc)
   if (trace === null) return { ...CLEAN_OPTIONS, enabled: true }
   const enabled = typeof trace.enabled === "boolean" ? trace.enabled : false
-  if (!enabled) return { ...CLEAN_OPTIONS, enabled: true }
+  if (!enabled) {
+    // Traced images carry a random distress seed created at generation
+    // time; pin to it so later distress passes are deterministic.
+    const seed = typeof trace.seed === "number" ? trace.seed : null
+    return { ...CLEAN_OPTIONS, enabled: true, seed }
+  }
   const raw = trace.options
   if (typeof raw !== "object" || raw === null) {
     return { ...CLEAN_OPTIONS, enabled: true }
