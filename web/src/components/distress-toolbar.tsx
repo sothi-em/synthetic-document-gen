@@ -269,10 +269,28 @@ const POST_EFFECTS: EffectDef[] = [
     (v) => String(v),
   ),
   intensityEffect("double_exposure", "Double exposure"),
-  valueEffect("folding", "Folding", "fold_count", 1, 6, 1, (v) => `${v} folds`),
+  valueEffect("folding", "Folding", "fold_count", 0, 6, 1, (v) =>
+    v === 0 ? "off" : `${v} folds`,
+  ),
   intensityEffect("bindings", "Bindings"),
-  intensityEffect("markup", "Markup"),
-  intensityEffect("scribbles", "Scribbles"),
+  {
+    key: "markup",
+    label: "Markup",
+    intensityKey: "markup_intensity",
+    min: 0,
+    max: 10,
+    step: 1,
+    fmt: (v) => (v === 0 ? "off" : `${Math.round(v)} lines`),
+  },
+  {
+    key: "scribbles",
+    label: "Scribbles",
+    intensityKey: "scribbles_intensity",
+    min: 0,
+    max: 10,
+    step: 1,
+    fmt: (v) => (v === 0 ? "off" : `${Math.round(v)} scribbles`),
+  },
 ]
 
 const SECTIONS: { key: SectionKey; label: string; effects: EffectDef[] }[] = [
@@ -358,7 +376,8 @@ function resolveIntensities(
   for (const flag of INTENSITY_EFFECTS) {
     const key = `${flag}_intensity` as keyof DistressOptions
     if (raw[key] == null) {
-      ;(next as unknown as Record<string, unknown>)[key] = merged[flag] ? 1 : 0
+      const full = flag === "markup" || flag === "scribbles" ? 3 : 1
+      ;(next as unknown as Record<string, unknown>)[key] = merged[flag] ? full : 0
     }
   }
   return next

@@ -240,7 +240,8 @@ def _build_augraphy_pipeline(
     _patch_augraphy()
 
     def _i(name: str) -> float:
-        """Resolved 0-1 intensity for *name* (never None after validation)."""
+        """Resolved intensity for *name* (0-1; 0-10 count for
+        markup and scribbles)."""
         return getattr(options, f"{name}_intensity")
 
     def _add(phase, name: str, aug) -> None:
@@ -586,7 +587,7 @@ def _build_augraphy_pipeline(
             post_phase,
             "markup",
             ag.Markup(
-                num_lines_range=(round(2 * i), round(5 * i)),
+                num_lines_range=(round(i), round(i)),
                 markup_type="random",
                 p=1.0,
             ),
@@ -597,7 +598,7 @@ def _build_augraphy_pipeline(
             "scribbles",
             ag.Scribbles(
                 scribbles_type="random",
-                scribbles_count_range=(round(1 * i), round(4 * i)),
+                scribbles_count_range=(round(i), round(i)),
                 p=1.0,
             ),
         )
