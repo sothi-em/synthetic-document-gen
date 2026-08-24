@@ -131,6 +131,12 @@ def _patch_augraphy() -> None:
 #: :func:`_build_augraphy_pipeline` (tagged by its ``DistressOptions``
 #: flag name) plus the random warp tail stage. This is the contract for
 #: ``effect_seeds`` maps: the trace/frontend share these names.
+#:
+#: Excluded deterministic effects: ``ink_fade`` (only scales the
+#: pipeline ``overlay_alpha``), ``blur`` (Gaussian kernel), and
+#: ``dithering`` (the floyd-steinberg path makes no random draws;
+#: augraphy only uses the PRNG for the "random"/"ordered" dither
+#: types, which we do not use).
 EFFECT_SEED_NAMES: tuple[str, ...] = (
     # ink phase
     "ink_bleed",
@@ -139,7 +145,6 @@ EFFECT_SEED_NAMES: tuple[str, ...] = (
     "ink_mottling",
     "ink_color_swap",
     "hollow",
-    "dithering",
     "dot_matrix",
     "low_ink_periodic_lines",
     "low_ink_random_lines",

@@ -452,12 +452,13 @@ function normalizeJpegOff(o: DistressOptions): DistressOptions {
 /**
  * Canonical per-effect seed names: every effect that draws from a PRNG
  * stream (mirrors `document_gen.generators.png_gen.EFFECT_SEED_NAMES`).
- * `ink_fade` only scales the overlay alpha and `blur` is deterministic,
- * so neither carries a seed.
+ * `ink_fade` only scales the overlay alpha, `blur` is a deterministic
+ * Gaussian kernel, and `dithering` (floyd-steinberg) makes no random
+ * draws, so none of them carries a seed.
  */
 const EFFECT_SEED_NAMES: string[] = [...INK_EFFECTS, ...PAPER_EFFECTS, ...POST_EFFECTS]
   .map((e) => e.key)
-  .filter((k) => k !== "ink_fade" && k !== "blur")
+  .filter((k) => k !== "ink_fade" && k !== "blur" && k !== "dithering")
 
 /** Fresh non-negative random seed (matches the backend's seed range). */
 function randomSeed(): number {

@@ -129,6 +129,8 @@ class TestRandomEffectSeeds:
     def test_effect_names_exclude_deterministic_effects(self):
         assert "ink_fade" not in EFFECT_SEED_NAMES
         assert "blur" not in EFFECT_SEED_NAMES
+        # floyd-steinberg dithering makes no random draws in augraphy
+        assert "dithering" not in EFFECT_SEED_NAMES
 
 
 class TestDistressImage:
