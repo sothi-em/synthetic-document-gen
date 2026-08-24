@@ -326,7 +326,10 @@ class TestGenerateDocumentImage:
         assert "None. Do not include any figures." in backend.calls[1]["prompt"]
 
         # A4 aspect (default): the sanitized HTML carries the A4 rule.
-        assert "@page { size: A4 portrait; margin: 2cm; }" in artifact.html
+        assert (
+            "@page { size: A4 portrait; margin: 2cm; background: white; }"
+            in artifact.html
+        )
         assert artifact.gen_tracing["a4_aspect"] is True
 
         _check_trace(artifact, backend, company_id)
@@ -338,7 +341,7 @@ class TestGenerateDocumentImage:
         artifact = _run(tmp_path, monkeypatch, backend, a4_aspect=False)
 
         # The sanitized HTML asks for a content-sized page…
-        assert "@page { size: auto; margin: 2cm; }" in artifact.html
+        assert "@page { size: auto; margin: 2cm; background: white; }" in artifact.html
         assert artifact.gen_tracing["a4_aspect"] is False
         # …and the HTML system prompt says so too.
         assert "content-sized (auto)" in backend.calls[1]["system"]

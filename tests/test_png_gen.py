@@ -796,13 +796,13 @@ class TestSanitizeImageHtml:
         doc = sanitize_image_html(
             "<html><head></head><body><p>hi</p></body></html>", a4=True
         )
-        assert "@page { size: A4 portrait; margin: 2cm; }" in doc
+        assert "@page { size: A4 portrait; margin: 2cm; background: white; }" in doc
 
     def test_auto_page_rule_injected(self) -> None:
         doc = sanitize_image_html(
             "<html><head></head><body><p>hi</p></body></html>", a4=False
         )
-        assert "@page { size: auto; margin: 2cm; }" in doc
+        assert "@page { size: auto; margin: 2cm; background: white; }" in doc
 
     def test_overrides_existing_page_rule(self) -> None:
         raw = (
@@ -816,7 +816,10 @@ class TestSanitizeImageHtml:
 
     def test_no_style_block_inserts_one(self) -> None:
         doc = sanitize_image_html("<html><body><p>hi</p></body></html>", a4=False)
-        assert "<style>@page { size: auto; margin: 2cm; }</style>" in doc
+        assert (
+            "<style>@page { size: auto; margin: 2cm; background: white; }</style>"
+            in doc
+        )
 
     def test_extracts_from_code_fences(self) -> None:
         raw = (
@@ -831,27 +834,31 @@ class TestSanitizeImageHtml:
             "<html><head></head><body><p>hi</p></body></html>", a4=False
         )
         forced = force_page_size(doc, "210mm", "123.4mm")
-        assert "@page { size: 210mm 123.4mm; margin: 2cm; }" in forced
+        assert (
+            "@page { size: 210mm 123.4mm; margin: 2cm; background: white; }" in forced
+        )
         assert "size: auto" not in forced
 
-    def test_body_background_promoted_to_page_rule(self) -> None:
+    def test_body_background_stripped_sheet_stays_white(self) -> None:
         raw = (
             "<html><head><style>body { background: #F5F0E8; font-size: 9pt; }</style>"
             "</head><body></body></html>"
         )
         doc = sanitize_image_html(raw, a4=True)
-        assert "@page { size: A4 portrait; margin: 2cm; background: #F5F0E8; }" in doc
+        assert "@page { size: A4 portrait; margin: 2cm; background: white; }" in doc
+        assert "#F5F0E8" not in doc
 
-    def test_html_selector_background_color_promoted(self) -> None:
+    def test_html_selector_background_color_stripped(self) -> None:
         raw = (
             "<html><head><style>html { background-color: rgb(245, 240, 232); }</style>"
             "</head><body></body></html>"
         )
         doc = sanitize_image_html(raw, a4=False)
-        assert "background: rgb(245, 240, 232);" in doc
+        assert "background: white;" in doc
         assert "size: auto" in doc
+        assert "rgb(245, 240, 232)" not in doc
 
-    def test_non_color_body_background_not_promoted(self) -> None:
+    def test_non_color_body_background_stripped(self) -> None:
         for value in (
             "none",
             "transparent",
@@ -864,30 +871,42 @@ class TestSanitizeImageHtml:
                 + "; }</style></head><body></body></html>"
             )
             doc = sanitize_image_html(raw, a4=True)
-            # The canonical rule must stay background-free.
-            assert "@page { size: A4 portrait; margin: 2cm; }" in doc, value
+            # The sheet must stay uniform white for every value.
+            assert "background: white;" in doc, value
+            assert value not in doc, value
 
-    def test_llm_page_background_carried_into_canonical_rule(self) -> None:
+    def test_element_backgrounds_kept(self) -> None:
+        raw = (
+            "<html><head><style>h1 { background: #1F3A5F; } "
+            "body { background: #F5F0E8; }</style>"
+            "</head><body></body></html>"
+        )
+        doc = sanitize_image_html(raw, a4=True)
+        # Element-level backgrounds are design, not the sheet: kept.
+        assert "h1 { background: #1F3A5F; }" in doc
+        assert "#F5F0E8" not in doc
+
+    def test_llm_page_background_stripped(self) -> None:
         raw = (
             "<html><head><style>@page { size: letter; background: #123456; }</style>"
             "</head><body></body></html>"
         )
         doc = sanitize_image_html(raw, a4=True)
-        assert "@page { size: A4 portrait; margin: 2cm; background: #123456; }" in doc
-        # The LLM's own rule must not survive with a duplicate background.
-        assert doc.count("background: #123456;") == 1
+        assert "@page { size: A4 portrait; margin: 2cm; background: white; }" in doc
+        assert "#123456" not in doc
 
-    def test_body_background_wins_over_page_background(self) -> None:
+    def test_body_and_page_backgrounds_stripped(self) -> None:
         raw = (
             "<html><head><style>@page { background: #111111; } "
             "body { background: #F5F0E8; }</style>"
             "</head><body></body></html>"
         )
         doc = sanitize_image_html(raw, a4=True)
-        assert "background: #F5F0E8;" in doc
+        assert "background: white;" in doc
         assert "#111111" not in doc
+        assert "#F5F0E8" not in doc
 
-    def test_force_page_size_preserves_background(self) -> None:
+    def test_force_page_size_keeps_white_sheet(self) -> None:
         raw = (
             "<html><head><style>body { background: #F5F0E8; }</style>"
             "</head><body></body></html>"
@@ -895,8 +914,9 @@ class TestSanitizeImageHtml:
         doc = sanitize_image_html(raw, a4=False)
         forced = force_page_size(doc, "210mm", "123.4mm")
         assert (
-            "@page { size: 210mm 123.4mm; margin: 2cm; background: #F5F0E8; }" in forced
+            "@page { size: 210mm 123.4mm; margin: 2cm; background: white; }" in forced
         )
+        assert "#F5F0E8" not in forced
 
 
 # ---------------------------------------------------------------------------

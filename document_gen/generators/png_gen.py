@@ -1009,9 +1009,8 @@ def _measure_content_height_mm(image, scale: float) -> float:
 
     Finds the last non-paper row and adds the bottom page margin plus a
     small safety buffer. The paper color is sampled from the top-left
-    corner (inside the page margin, so it reflects the ``@page``
-    background, which may be a non-white paper color) instead of
-    assuming white.
+    corner (inside the page margin, so it reflects the uniform white
+    ``@page`` background) instead of assuming white.
 
     Args:
         image: Rasterized page 1 (PIL image).
