@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Dices,
   LoaderCircle,
+  RefreshCw,
   RotateCcw,
   Save,
   X,
@@ -347,6 +348,11 @@ const INTENSITY_EFFECTS: (keyof DistressOptions)[] = [
 function effectValue(e: EffectDef, o: DistressOptions): number {
   const v = Number(o[e.intensityKey ?? e.valueKey!])
   return Number.isFinite(v) ? v : 0
+}
+
+/** Whether an effect draws from a PRNG stream (i.e. has a reseedable seed). */
+function hasSeed(e: EffectDef): boolean {
+  return EFFECT_SEED_NAMES.includes(e.key)
 }
 
 /** Whether an effect is active (slider above its off value). */
@@ -856,8 +862,27 @@ export function DistressToolbar({
                         >
                           {e.label}
                         </span>
-                        <span className="text-xs text-muted-foreground">
-                          {e.fmt(effectValue(e, options))}
+                        <span className="flex items-center gap-1.5">
+                          {hasSeed(e) && (
+                            <button
+                              type="button"
+                              title={`Reseed ${e.label}`}
+                              aria-label={`Reseed ${e.label}`}
+                              className="text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-muted-foreground"
+                              disabled={!editable || !isActive(e, options)}
+                              onClick={() =>
+                                setEffectSeeds((prev) => ({
+                                  ...prev,
+                                  [e.key]: randomSeed(),
+                                }))
+                              }
+                            >
+                              <RefreshCw className="size-3.5" />
+                            </button>
+                          )}
+                          <span className="text-xs text-muted-foreground">
+                            {e.fmt(effectValue(e, options))}
+                          </span>
                         </span>
                       </div>
                       <Slider
