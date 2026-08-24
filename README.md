@@ -196,6 +196,8 @@ an interactive directory browser that navigates the server's filesystem.
 
 ### PNG image document generation
 
+<video src="resources/image_distress_final_small.mp4" controls autoplay loop muted style="max-width: 100%;"></video>
+
 Renders one of a company's document types into a **single-page PNG image**.
 The pipeline mirrors the PDF pipeline (plan → markdown → figures →
 HTML+CSS), but the HTML is constrained to one page and rendered to PNG with
