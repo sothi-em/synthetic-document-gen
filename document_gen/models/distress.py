@@ -384,9 +384,7 @@ class DistressOptions(BaseModel):
         for name in _INTENSITY_EFFECTS:
             if getattr(self, f"{name}_intensity") is None:
                 full = 3.0 if name in ("markup", "scribbles") else 1.0
-                setattr(
-                    self, f"{name}_intensity", full if getattr(self, name) else 0.0
-                )
+                setattr(self, f"{name}_intensity", full if getattr(self, name) else 0.0)
         # Quality 100 is the off point for the JPEG artifacts effect
         # (a quality-100 round-trip is still lossy, but close enough to
         # the clean render that it doubles as "no effect").
