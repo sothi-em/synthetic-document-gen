@@ -448,6 +448,8 @@ def _plan_document(
     user_input: str | None,
     seed: int,
     model_name: str | None,
+    variation_index: int = 1,
+    variation_total: int = 1,
 ) -> tuple[DocumentPlan, str, float, bool]:
     """Ask the LLM to plan the report (TOC decision + design brief).
 
@@ -463,6 +465,12 @@ def _plan_document(
         user_input: Optional free-text user guidance.
         seed: Random seed for deterministic runs.
         model_name: Optional model ID override.
+        variation_index: 1-based index of this document in the series
+            (1 for a standalone document).
+        variation_total: Total number of documents in the series (1 for
+            a standalone document). When > 1 the plan prompt carries the
+            series scope so the plan is scoped to this document's single
+            series value (e.g. one year, not all of them).
 
     Returns:
         A tuple ``(plan, prompt, elapsed_s, used_default)`` where
@@ -488,6 +496,10 @@ def _plan_document(
                 "<user_input>",
                 user_input.strip() if user_input and user_input.strip() else "None.",
             )
+            .replace(
+                "<series>",
+                series_scope_instruction(variation_index, variation_total),
+            )
         )
     else:
         prompt = (
@@ -498,6 +510,10 @@ def _plan_document(
             .replace(
                 "<user_input>",
                 user_input.strip() if user_input and user_input.strip() else "None.",
+            )
+            .replace(
+                "<series>",
+                series_scope_instruction(variation_index, variation_total),
             )
         )
     t_step = time.perf_counter()
@@ -527,6 +543,41 @@ def _plan_document(
     return plan, prompt, elapsed, False
 
 
+def series_scope_instruction(
+    variation_index: int,
+    variation_total: int,
+) -> str:
+    """Build the ``<series>`` scope instruction for the plan prompts.
+
+    A multi-document series (e.g. one annual report each for 2012, 2013,
+    2014) must produce one document per series value. This text scopes a
+    single document to the value at position *variation_index* so the
+    model never spreads every value across one document (e.g. one sheet
+    or section per year). Shared by the plan prompts (which run for
+    document 1, before any reference exists) and the content prompts.
+
+    Args:
+        variation_index: 1-based index of this document in the series.
+        variation_total: Total number of documents in the series.
+
+    Returns:
+        The instruction text for the ``<series>`` prompt slot.
+    """
+    if variation_total <= 1:
+        return "No — this is a standalone document."
+    return (
+        f"Yes — this is document {variation_index} of {variation_total} in "
+        "a series. If the user instructions list ordered values for the "
+        "series (e.g. years 2012, 2013, 2014, 2015), this document must "
+        f"cover ONLY the value at position {variation_index} (for document "
+        "1, that is the first value): build every section, table, sheet, "
+        "and the title around that single value. Do NOT create extra "
+        "sections, sheets, or tabs for the other values — the remaining "
+        "documents in the series cover them. If the user instructions "
+        "contain no ordered values, vary the data values instead."
+    )
+
+
 def variation_instruction(
     variation_index: int,
     variation_total: int,
@@ -534,10 +585,13 @@ def variation_instruction(
 ) -> str:
     """Build the ``<variation>`` instruction for the content prompts.
 
-    For the first document of a series (or a standalone document) the
-    slot carries the standalone default. For later documents it explains
-    that the draft must mirror the reference document's structure with
-    different data values, and embeds the reference markdown.
+    For a standalone document the slot carries the standalone default.
+    For document 1 of a multi-document series it carries the series
+    scope (see :func:`series_scope_instruction`) so the first document
+    is already scoped to its own series value even though no reference
+    exists yet. For later documents it explains that the draft must
+    mirror the reference document's structure with different data
+    values, and embeds the reference markdown.
 
     Args:
         variation_index: 1-based index of this document in the series.
@@ -549,7 +603,9 @@ def variation_instruction(
         The instruction text for the ``<variation>`` prompt slot.
     """
     if variation_index <= 1:
-        return "No — this is a standalone document."
+        # Document 1 has no reference to mirror, but it must still be
+        # scoped to its own series value (not all of them).
+        return series_scope_instruction(variation_index, variation_total)
     reference = (reference_markdown or "").strip() or "(unavailable)"
     return (
         f"Yes — this is document {variation_index} of {variation_total} in "
@@ -560,7 +616,10 @@ def variation_instruction(
         "internally consistent, plausible values. If the user instructions "
         "list ordered values for the series (e.g. years 2012, 2013, 2014), "
         f"use the value at position {variation_index} and update the title "
-        "accordingly.\n\n"
+        "accordingly. This document must cover **only** that single value "
+        "— if the reference or the user instructions contain other values "
+        "(e.g. other years), drop their sections, tables, and sheets; do "
+        "not carry them into this document.\n\n"
         "Reference document (markdown)\n"
         f"{reference}"
     )
@@ -817,6 +876,8 @@ def generate_document_pdf(
             user_input,
             seed,
             model_name,
+            variation_index=variation_index,
+            variation_total=variation_total,
         )
     trace["stages"]["plan"] = {
         "prompt": plan_prompt,

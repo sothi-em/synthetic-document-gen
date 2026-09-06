@@ -498,6 +498,8 @@ def generate_document_image(
             user_input=user_input,
             seed=seed,
             model_name=model_name,
+            variation_index=variation_index,
+            variation_total=variation_total,
         )
     trace["stages"]["plan"] = {
         "prompt": plan_prompt,

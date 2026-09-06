@@ -88,12 +88,32 @@ class TestVariationInstruction:
             == "No — this is a standalone document."
         )
 
-    def test_first_of_series_is_standalone(self) -> None:
-        # Document 1 of a series is generated as today (no reference yet).
+    def test_first_of_series_is_scoped_to_first_value(self) -> None:
+        # Document 1 of a series has no reference yet, but must still be
+        # scoped to its own series value (not all of them).
+        text = document_pdf.variation_instruction(1, 3)
+        assert "document 1 of 3" in text
+        assert "position 1" in text
+        assert "standalone" not in text
+
+
+class TestSeriesScopeInstruction:
+    """The <series> slot text: standalone default or single-value scope."""
+
+    def test_standalone_default(self) -> None:
         assert (
-            document_pdf.variation_instruction(1, 3)
+            document_pdf.series_scope_instruction(1, 1)
             == "No — this is a standalone document."
         )
+
+    def test_series_scope_scopes_to_one_value(self) -> None:
+        text = document_pdf.series_scope_instruction(2, 4)
+        assert "document 2 of 4" in text
+        assert "position 2" in text
+        # The model must not spread the series values across one document
+        # (e.g. one sheet or section per year).
+        assert "NOT create extra" in text
+        assert "sheets, or tabs" in text
 
     def test_variation_carries_index_total_and_reference(self) -> None:
         text = document_pdf.variation_instruction(
@@ -520,8 +540,8 @@ class TestGenerateReportPdf:
         monkeypatch.setattr(document_pdf, "get_chat_backend", lambda: backend)
         _stub_pdf(monkeypatch)
 
-        # Reference document (1 of 2): generated exactly as today, with
-        # the standalone variation slot and a fresh plan LLM call.
+        # Reference document (1 of 2): scoped to its own series value
+        # (no reference yet) with a fresh plan LLM call.
         first = document_pdf.generate_document_pdf(
             company_id,
             "Onboarding Guide",
@@ -531,7 +551,10 @@ class TestGenerateReportPdf:
             gen_tracing=True,
         )
         assert first.plan == FakeBackend.PLAN
-        assert "No — this is a standalone document." in backend.calls[0]["prompt"]
+        assert "document 1 of 2" in backend.calls[0]["prompt"]
+        # The plan prompt carries the same series scope so the planned
+        # design covers only this document's single series value.
+        assert "document 1 of 2" in backend.query_calls[0]["prompt"]
         assert first.gen_tracing["variation_index"] == 1
         assert first.gen_tracing["variation_total"] == 2
         assert first.gen_tracing["stages"]["plan"]["reused"] is False

@@ -97,6 +97,7 @@ class TestPromptTemplates:
                 "<quick_doc>": "no",
                 "<figures>": "bar, line",
                 "<user_input>": "None.",
+                "<series>": "No — this is a standalone document.",
             },
         )
 
@@ -124,6 +125,7 @@ class TestExcelPromptTemplates:
                 "<glossary>": "no",
                 "<figures>": "bar, line",
                 "<user_input>": "None.",
+                "<series>": "No — this is a standalone document.",
             },
         )
         # The plan prompt hardcodes the simple-sheets sheet-count rule and
@@ -185,6 +187,7 @@ class TestQuickPromptTemplates:
                 "<document_type>": "name: Onboarding Guide",
                 "<figures>": "bar",
                 "<user_input>": "None.",
+                "<series>": "No — this is a standalone document.",
             },
         )
         # The quick plan prompt hardcodes the no-TOC / minimal-design

@@ -439,9 +439,7 @@ class TestCompanyBrowse:
             == 404
         )
         assert (
-            client.post(
-                f"/api/companies/{company_id}/favorite", json={}
-            ).status_code
+            client.post(f"/api/companies/{company_id}/favorite", json={}).status_code
             == 422
         )
 

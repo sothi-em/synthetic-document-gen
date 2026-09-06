@@ -215,6 +215,8 @@ def _plan_workbook(
     seed: int,
     model_name: str | None,
     thinking: bool,
+    variation_index: int = 1,
+    variation_total: int = 1,
 ) -> tuple[ExcelPlan, str, float, bool]:
     """Ask the LLM to plan the workbook (sheet names + design brief).
 
@@ -232,6 +234,13 @@ def _plan_workbook(
         seed: Random seed for deterministic runs.
         model_name: Optional model ID override.
         thinking: Whether model thinking/reasoning is enabled.
+        variation_index: 1-based index of this workbook in the series
+            (1 for a standalone workbook).
+        variation_total: Total number of workbooks in the series (1 for
+            a standalone workbook). When > 1 the plan prompt carries the
+            series scope so the planned sheet names cover this
+            workbook's single series value (e.g. one year, not all of
+            them).
 
     Returns:
         A tuple ``(plan, prompt, elapsed_s, used_default)`` where
@@ -253,6 +262,10 @@ def _plan_workbook(
         .replace(
             "<user_input>",
             user_input.strip() if user_input and user_input.strip() else "None.",
+        )
+        .replace(
+            "<series>",
+            document_pdf.series_scope_instruction(variation_index, variation_total),
         )
     )
     t_step = time.perf_counter()
@@ -540,6 +553,8 @@ def generate_document_excel(
             seed,
             model_name,
             thinking,
+            variation_index=variation_index,
+            variation_total=variation_total,
         )
     trace["stages"]["plan"] = {
         "prompt": plan_prompt,

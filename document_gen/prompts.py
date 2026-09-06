@@ -156,6 +156,7 @@ Generation options
 - Quick doc (short, fast document): <quick_doc>
 - Figures to include: <figures>
 - Additional user instructions: <user_input>
+- Series scope: <series>
 
 Task
 Decide two things:
@@ -282,6 +283,7 @@ Document to plan
 
 Figures to include: <figures>
 Additional user instructions: <user_input>
+Series scope: <series>
 
 Task
 1. **Table of contents**: quick documents do NOT need a TOC; set
@@ -406,6 +408,7 @@ Generation options
   <glossary>
 - Figures to include: <figures>
 - Additional user instructions: <user_input>
+- Series scope: <series>
 
 Task
 Produce a workbook-level design plan:

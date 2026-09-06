@@ -80,6 +80,7 @@ class TestDocumentPlanPrompt:
                 "<quick_doc>": "no",
                 "<figures>": "bar, line",
                 "<user_input>": "None.",
+                "<series>": "No — this is a standalone document.",
             },
         )
 

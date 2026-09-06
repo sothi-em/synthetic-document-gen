@@ -351,7 +351,8 @@ class TestGenerateDocumentImage:
     ) -> None:
         backend = FakeBackend()
 
-        # Reference image (1 of 2): the plan LLM call runs as today.
+        # Reference image (1 of 2): scoped to its own series value in
+        # both the content and plan prompts.
         first = _run(
             tmp_path,
             monkeypatch,
@@ -361,7 +362,8 @@ class TestGenerateDocumentImage:
             gen_tracing=True,
         )
         assert first.plan == FakeBackend.PLAN
-        assert "No — this is a standalone document." in backend.calls[0]["prompt"]
+        assert "document 1 of 2" in backend.calls[0]["prompt"]
+        assert "document 1 of 2" in backend.query_calls[0]["prompt"]
         assert [c["model"] for c in backend.query_calls] == [DocumentPlan]
 
         # Image 2 of 2: the plan call is skipped and the reference
