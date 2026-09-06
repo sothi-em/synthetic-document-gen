@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Search,
   Sparkles,
+  Star,
   Trash2,
   X,
 } from "lucide-react"
@@ -49,6 +50,14 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { GenerateDocumentTypesDialog } from "@/components/generate-dialogs"
 import { GeneratePdfDialog } from "@/components/generate-pdf-dialog"
@@ -231,6 +240,12 @@ export function DocumentTypesPanel({
     if (selected) loadDocumentTypes(selected.id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey])
+
+  // Favorite companies, shown as quick-pick chips below the search.
+  const favorites = useMemo(
+    () => allCompanies.filter((company) => company.favorite),
+    [allCompanies],
+  )
 
   // Case-insensitive partial match on the cached company names.
   const suggestions = useMemo(() => {
@@ -435,6 +450,55 @@ export function DocumentTypesPanel({
         </div>
 
         {error && <p className="text-sm text-destructive">{error}</p>}
+
+        {!companiesLoading && favorites.length > 0 && (
+          <div>
+            <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              <Star
+                className="size-3.5 fill-amber-400 text-amber-400"
+                aria-hidden
+              />
+              Favorites
+            </p>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Industry</TableHead>
+                  <TableHead>HQ</TableHead>
+                  <TableHead>Size</TableHead>
+                  <TableHead className="text-right">Document types</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {favorites.map((company) => (
+                  <TableRow
+                    key={company.id}
+                    data-state={selected?.id === company.id ? "selected" : undefined}
+                    className="cursor-pointer"
+                    onClick={() => pickCompany(company)}
+                  >
+                    <TableCell className="font-medium">
+                      <span className="inline-flex items-center gap-2">
+                        <Star
+                          className="size-3.5 shrink-0 fill-amber-400 text-amber-400"
+                          aria-hidden
+                        />
+                        {company.name}
+                      </span>
+                    </TableCell>
+                    <TableCell>{company.industry}</TableCell>
+                    <TableCell>{company.headquarters}</TableCell>
+                    <TableCell className="capitalize">{company.size}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {company.num_reports}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
 
         {selected === null ? (
           <div className="flex flex-col items-center gap-3 py-10 text-center">
