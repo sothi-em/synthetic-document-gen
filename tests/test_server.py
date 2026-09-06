@@ -349,6 +349,7 @@ class TestCompanyBrowse:
         assert len(items) == len(company_db)
         assert items[0]["name"] == "LuxeStays Hospitality Group"
         assert "id" in items[0]
+        assert all(item["favorite"] is False for item in items)
         # Industry filter.
         filtered = client.get(
             "/api/companies", params={"industry": "Hospitality"}
@@ -409,6 +410,39 @@ class TestCompanyBrowse:
                 },
             ).status_code
             == 404
+        )
+
+    def test_favorite_endpoint(self, client, company_db) -> None:
+        company_id = company_db[0]
+        # Mark as favorite.
+        response = client.post(
+            f"/api/companies/{company_id}/favorite", json={"favorite": True}
+        )
+        assert response.status_code == 200
+        assert response.json() == {"favorite": True}
+        assert company_id in document_query.get_favorite_company_ids()
+        # Listing and detail carry the flag.
+        listed = client.get("/api/companies").json()
+        assert next(i for i in listed if i["id"] == company_id)["favorite"] is True
+        assert client.get(f"/api/companies/{company_id}").json()["favorite"] is True
+        # Unmark.
+        response = client.post(
+            f"/api/companies/{company_id}/favorite", json={"favorite": False}
+        )
+        assert response.json() == {"favorite": False}
+        assert document_query.get_favorite_company_ids() == set()
+        # Unknown company: 404; invalid body: 422.
+        assert (
+            client.post(
+                "/api/companies/999999/favorite", json={"favorite": True}
+            ).status_code
+            == 404
+        )
+        assert (
+            client.post(
+                f"/api/companies/{company_id}/favorite", json={}
+            ).status_code
+            == 422
         )
 
 

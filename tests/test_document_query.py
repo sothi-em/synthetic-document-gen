@@ -133,6 +133,7 @@ class TestRead:
             "headquarters",
             "size",
             "num_reports",
+            "favorite",
         }
         assert first["name"] == "Acme Corp"
         assert first["num_reports"] == 1
@@ -160,6 +161,58 @@ class TestDelete:
         assert document_query.get_document_types(doc_id) == []
         # Deleting an unknown id is a no-op.
         assert document_query.delete_company(999999) is False
+
+
+class TestFavorites:
+    def test_set_and_get_toggle(self) -> None:
+        doc_id = document_query.save_company(_make_profile("Acme Corp", "Retail"))
+        assert document_query.get_favorite_company_ids() == set()
+        assert document_query.set_favorite(doc_id, True) is True
+        assert document_query.get_favorite_company_ids() == {doc_id}
+        # Idempotent re-set.
+        assert document_query.set_favorite(doc_id, True) is True
+        assert document_query.get_favorite_company_ids() == {doc_id}
+        assert document_query.set_favorite(doc_id, False) is False
+        assert document_query.get_favorite_company_ids() == set()
+        # Unmarking an unknown id is a no-op.
+        assert document_query.set_favorite(999999, False) is False
+        assert document_query.get_favorite_company_ids() == set()
+
+    def test_missing_and_malformed_setting(self) -> None:
+        # No setting at all.
+        assert document_query.get_favorite_company_ids() == set()
+        # Malformed values are treated as empty.
+        document_query.set_setting(
+            document_query.FAVORITES_SETTINGS_KEY, {"company_ids": "nope"}
+        )
+        assert document_query.get_favorite_company_ids() == set()
+        document_query.set_setting(document_query.FAVORITES_SETTINGS_KEY, {"other": 1})
+        assert document_query.get_favorite_company_ids() == set()
+        # Non-integer entries are ignored, but valid ids survive.
+        document_query.set_setting(
+            document_query.FAVORITES_SETTINGS_KEY,
+            {"company_ids": [3, "x", True, None]},
+        )
+        assert document_query.get_favorite_company_ids() == {3}
+
+    def test_listing_and_detail_carry_favorite_flag(self) -> None:
+        first = document_query.save_company(_make_profile("Acme Corp", "Retail"))
+        second = document_query.save_company(_make_profile("Beta Inc", "Energy"))
+        document_query.set_favorite(first, True)
+        flags = {i["id"]: i["favorite"] for i in document_query.list_companies()}
+        assert flags == {first: True, second: False}
+        assert document_query.get_company(first)["favorite"] is True
+        assert document_query.get_company(second)["favorite"] is False
+
+    def test_delete_company_prunes_favorite(self) -> None:
+        doc_id = document_query.save_company(_make_profile("Acme Corp", "Retail"))
+        document_query.set_favorite(doc_id, True)
+        document_query.delete_company(doc_id)
+        assert document_query.get_favorite_company_ids() == set()
+        # Deleting a non-favorite company leaves the list untouched.
+        other = document_query.save_company(_make_profile("Beta Inc", "Energy"))
+        document_query.delete_company(other)
+        assert document_query.get_favorite_company_ids() == set()
 
 
 class TestUserSettings:

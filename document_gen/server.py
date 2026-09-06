@@ -139,6 +139,12 @@ class GenerateDocumentTypesRequest(BaseModel):
     model: str | None = None
 
 
+class FavoriteCompanyRequest(BaseModel):
+    """Request body for ``POST /api/companies/{company_id}/favorite``."""
+
+    favorite: bool = Field(description="Whether the company should be a favorite.")
+
+
 class RenameDocumentRequest(BaseModel):
     """Request body for ``PATCH /api/documents/{doc_id}``."""
 
@@ -904,6 +910,14 @@ def update_company(company_id: int, profile: SyntheticCompany) -> dict:
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found")
     return company
+
+
+@app.post("/api/companies/{company_id}/favorite")
+def set_company_favorite(company_id: int, payload: FavoriteCompanyRequest) -> dict:
+    """Mark or unmark the given company as a favorite."""
+    _require_company(company_id)
+    favorite = document_query.set_favorite(company_id, payload.favorite)
+    return {"favorite": favorite}
 
 
 # ---------------------------------------------------------------------------

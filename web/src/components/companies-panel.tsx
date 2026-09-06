@@ -7,6 +7,7 @@ import {
   RefreshCw,
   Search,
   Sparkles,
+  Star,
   Trash2,
 } from "lucide-react"
 
@@ -67,6 +68,9 @@ function sizeBadgeClass(size: string): string {
   return SIZE_STYLES[size.toLowerCase()] ?? ""
 }
 
+/** Sentinel value for the industry select's "clear" option (Radix rejects empty values). */
+const ALL_INDUSTRIES = "__all__"
+
 function SortableHead({
   label,
   sortKey,
@@ -121,6 +125,7 @@ export function CompaniesPanel({
   const [detailLoading, setDetailLoading] = useState(selectedCompanyId !== null)
   const [sortKey, setSortKey] = useState<SortKey>("name")
   const [sortDir, setSortDir] = useState<SortDir>("asc")
+  const [favoritesOnly, setFavoritesOnly] = useState(false)
 
   function handleSort(key: SortKey) {
     if (key === sortKey) {
@@ -151,10 +156,11 @@ export function CompaniesPanel({
   }, [loadCompanies, refreshKey])
 
   // Case-insensitive partial match on the cached companies, plus the
-  // industry dropdown filter.
+  // industry dropdown and favorites filters.
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     return companies.filter((company) => {
+      if (favoritesOnly && !company.favorite) return false
       if (industry && company.industry !== industry) return false
       if (!q) return true
       return (
@@ -163,7 +169,7 @@ export function CompaniesPanel({
         company.headquarters.toLowerCase().includes(q)
       )
     })
-  }, [companies, industry, search])
+  }, [companies, industry, search, favoritesOnly])
 
   const sorted = useMemo(() => {
     const factor = sortDir === "asc" ? 1 : -1
@@ -199,6 +205,26 @@ export function CompaniesPanel({
       void openDetail(selectedCompanyId)
     }
   }, [openDetail, selectedCompanyId])
+
+  /** Star/unstar a company with an optimistic update (reverts on error). */
+  function toggleFavorite(company: { id: number; favorite: boolean }) {
+    const next = !company.favorite
+    const apply = (favorite: boolean) => {
+      setCompanies((prev) =>
+        prev.map((c) => (c.id === company.id ? { ...c, favorite } : c)),
+      )
+      setDetail((prev) =>
+        prev && prev.id === company.id ? { ...prev, favorite } : prev,
+      )
+    }
+    apply(next)
+    api
+      .setFavorite(company.id, next)
+      .catch((err) => {
+        apply(company.favorite)
+        setError(err instanceof Error ? err.message : String(err))
+      })
+  }
 
   async function removeDocumentType(id: number) {
     if (!detail) return
@@ -244,11 +270,17 @@ export function CompaniesPanel({
                 className="pl-8"
               />
             </div>
-            <Select value={industry} onValueChange={setIndustry}>
+            <Select
+              value={industry === "" ? ALL_INDUSTRIES : industry}
+              onValueChange={(value) =>
+                setIndustry(value === ALL_INDUSTRIES ? "" : value)
+              }
+            >
               <SelectTrigger className="w-full sm:w-52">
                 <SelectValue placeholder="All industries" />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value={ALL_INDUSTRIES}>All industries</SelectItem>
                 {industries.map((item) => (
                   <SelectItem key={item} value={item}>
                     {item}
@@ -256,6 +288,14 @@ export function CompaniesPanel({
                 ))}
               </SelectContent>
             </Select>
+            <Button
+              variant={favoritesOnly ? "default" : "outline"}
+              onClick={() => setFavoritesOnly((v) => !v)}
+              aria-pressed={favoritesOnly}
+            >
+              <Star className={cn(favoritesOnly && "fill-current")} />
+              Favorites
+            </Button>
             <Button variant="outline" onClick={loadCompanies}>
               <RefreshCw />
               Refresh
@@ -293,6 +333,9 @@ export function CompaniesPanel({
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-10">
+                      <span className="sr-only">Favorite</span>
+                    </TableHead>
                     <SortableHead
                       label="Name"
                       sortKey="name"
@@ -346,6 +389,27 @@ export function CompaniesPanel({
                         void openDetail(company.id)
                       }}
                     >
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => toggleFavorite(company)}
+                          aria-pressed={company.favorite}
+                          aria-label={
+                            company.favorite
+                              ? `Remove ${company.name} from favorites`
+                              : `Add ${company.name} to favorites`
+                          }
+                          className="text-muted-foreground transition-colors hover:text-amber-500"
+                        >
+                          <Star
+                            className={cn(
+                              "size-4",
+                              company.favorite && "fill-amber-400 text-amber-400",
+                            )}
+                            aria-hidden
+                          />
+                        </button>
+                      </TableCell>
                       <TableCell className="font-medium">
                         {company.name}
                       </TableCell>
@@ -388,14 +452,35 @@ export function CompaniesPanel({
             </div>
           ) : detail && detail.profile ? (
             <div className="flex flex-col gap-4">
-              <div>
-                <h3 className="font-heading text-lg font-semibold">
-                  {detail.profile.name}
-                </h3>
-                <p className="text-sm text-muted-foreground">
-                  {detail.profile.industry} · {detail.profile.headquarters} ·{" "}
-                  {detail.profile.size}
-                </p>
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <h3 className="font-heading text-lg font-semibold">
+                    {detail.profile.name}
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    {detail.profile.industry} · {detail.profile.headquarters} ·{" "}
+                    {detail.profile.size}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => toggleFavorite(detail)}
+                  aria-pressed={detail.favorite}
+                  aria-label={
+                    detail.favorite
+                      ? `Remove ${detail.profile.name} from favorites`
+                      : `Add ${detail.profile.name} to favorites`
+                  }
+                  className="shrink-0 text-muted-foreground transition-colors hover:text-amber-500"
+                >
+                  <Star
+                    className={cn(
+                      "size-5",
+                      detail.favorite && "fill-amber-400 text-amber-400",
+                    )}
+                    aria-hidden
+                  />
+                </button>
               </div>
               <p className="text-sm leading-relaxed">
                 {detail.profile.description}

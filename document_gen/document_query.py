@@ -51,6 +51,8 @@ MEMORY_DB_PATH = "<memory>"
 
 #: Collection holding one document per named settings group.
 USER_SETTINGS = "user_settings"
+#: User-settings key holding the user's favorite company ids.
+FAVORITES_SETTINGS_KEY = "favorites"
 #: Collection holding one document per document type (FK: ``company_id``).
 DOCUMENT_TYPES = "document_types"
 #: Collection holding one document per generated document file
@@ -333,6 +335,61 @@ def list_settings() -> list[dict[str, Any]]:
     """
     with _LOCK:
         return [dict(doc) for doc in _settings_table().all()]
+
+
+# ---------------------------------------------------------------------------
+# Company favorites
+# ---------------------------------------------------------------------------
+
+
+def _favorite_ids_unlocked() -> set[int]:
+    """Return the stored favorite company ids (caller holds :data:`_LOCK`).
+
+    A missing or malformed favorites setting is treated as an empty list.
+    """
+    value = get_setting(FAVORITES_SETTINGS_KEY)
+    if not isinstance(value, dict):
+        return set()
+    raw_ids = value.get("company_ids")
+    if not isinstance(raw_ids, list):
+        return set()
+    return {i for i in raw_ids if isinstance(i, int) and not isinstance(i, bool)}
+
+
+def _save_favorite_ids_unlocked(ids: set[int]) -> None:
+    """Persist the favorite company ids (caller holds :data:`_LOCK`)."""
+    set_setting(FAVORITES_SETTINGS_KEY, {"company_ids": sorted(ids)})
+
+
+def get_favorite_company_ids() -> set[int]:
+    """Return the set of company ids marked as favorites.
+
+    Returns:
+        The favorite ``doc_id`` set; empty when no favorites are stored
+        or the setting is malformed.
+    """
+    with _LOCK:
+        return _favorite_ids_unlocked()
+
+
+def set_favorite(company_id: int, favorite: bool) -> bool:
+    """Mark or unmark one company as a favorite.
+
+    Args:
+        company_id: The TinyDB ``doc_id`` of the company.
+        favorite: The desired state (``True`` marks, ``False`` unmarks).
+
+    Returns:
+        The new favorite state (i.e. *favorite*).
+    """
+    with _LOCK:
+        ids = _favorite_ids_unlocked()
+        if favorite:
+            ids.add(company_id)
+        else:
+            ids.discard(company_id)
+        _save_favorite_ids_unlocked(ids)
+    return favorite
 
 
 # ---------------------------------------------------------------------------
@@ -880,6 +937,7 @@ def get_company(doc_id: int) -> dict[str, Any] | None:
             return None
         result = _doc_to_dict(doc)
         result["reports"] = _attach_documents(_get_document_types_unlocked(doc_id))
+        result["favorite"] = doc_id in _favorite_ids_unlocked()
     return result
 
 
@@ -897,12 +955,14 @@ def list_companies(
 
     Returns:
         A list of summary dicts with ``id``, ``name``, ``industry``,
-        ``headquarters``, ``size`` and ``num_reports`` keys.
+        ``headquarters``, ``size``, ``num_reports`` and ``favorite``
+        keys.
     """
     with _LOCK:
         db = get_db()
         docs = db.all()
         document_docs = db.table(DOCUMENT_TYPES).all()
+        favorite_ids = _favorite_ids_unlocked()
     counts: dict[int, int] = {}
     for document_doc in document_docs:
         company_id = document_doc.get("company_id")
@@ -927,6 +987,7 @@ def list_companies(
                 "headquarters": profile.get("headquarters"),
                 "size": profile.get("size"),
                 "num_reports": counts.get(doc.doc_id, 0),  # type: ignore[attr-defined]
+                "favorite": doc.doc_id in favorite_ids,  # type: ignore[attr-defined]
             }
         )
     return items
@@ -974,4 +1035,9 @@ def delete_company(doc_id: int) -> bool:
         if removed_ids:
             _document_types_table().remove(where("company_id") == doc_id)
             _documents_table().remove(where("company_id") == doc_id)
+            # Prune the deleted id from the favorites list.
+            favorite_ids = _favorite_ids_unlocked()
+            if doc_id in favorite_ids:
+                favorite_ids.discard(doc_id)
+                _save_favorite_ids_unlocked(favorite_ids)
     return len(removed_ids) > 0

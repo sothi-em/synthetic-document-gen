@@ -295,6 +295,8 @@ export interface CompanySummary {
   headquarters: string
   size: string
   num_reports: number
+  /** Whether the user marked this company as a favorite. */
+  favorite: boolean
 }
 
 export interface DocumentType {
@@ -357,6 +359,8 @@ export interface CompanyDetail {
   profile: CompanyProfile | null
   /** Stored document types (carry their TinyDB ``id``). */
   reports: DocumentTypeDoc[]
+  /** Whether the user marked this company as a favorite. */
+  favorite: boolean
   seed: number
   /** User-provided context that guided the company's generation, if any. */
   user_input?: string | null
@@ -470,6 +474,12 @@ export const api = {
     return request<CompanySummary[]>(`/api/companies${query ? `?${query}` : ""}`)
   },
   company: (id: number) => request<CompanyDetail>(`/api/companies/${id}`),
+  /** Mark or unmark a company as a favorite. */
+  setFavorite: (id: number, favorite: boolean) =>
+    request<{ favorite: boolean }>(`/api/companies/${id}/favorite`, {
+      method: "POST",
+      body: JSON.stringify({ favorite }),
+    }),
   updateCompany: (id: number, profile: CompanyProfile) =>
     request<CompanyDetail>(`/api/companies/${id}`, {
       method: "PATCH",
