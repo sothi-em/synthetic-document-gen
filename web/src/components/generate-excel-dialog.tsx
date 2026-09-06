@@ -23,6 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
@@ -68,6 +69,7 @@ export function GenerateExcelDialog({
 }: GenerateExcelDialogProps) {
   const [userInput, setUserInput] = useState("")
   const [model, setModel] = useState("")
+  const [count, setCount] = useState("1")
   const [quickDoc, setQuickDoc] = useState(false)
   const [genTrace, setGenTrace] = useState(false)
   const [simpleSheets, setSimpleSheets] = useState(false)
@@ -85,6 +87,7 @@ export function GenerateExcelDialog({
     if (open) {
       setUserInput("")
       setModel("")
+      setCount("1")
       setQuickDoc(false)
       setGenTrace(false)
       setSimpleSheets(false)
@@ -99,7 +102,9 @@ export function GenerateExcelDialog({
     }
   }, [open, docType, reset])
 
-  const hasResult = state.finished && !state.error && !!state.result
+  // Partial results (job finished with an error) are shown too, with the
+  // error message still visible via JobStatus.
+  const hasResult = state.finished && !!state.result
 
   // Keep the dialog open while a generation job is running (blocks the X,
   // Escape, and outside-click dismissal).
@@ -112,6 +117,7 @@ export function GenerateExcelDialog({
     event.preventDefault()
     if (state.running) return
     setSubmitError(null)
+    const countValue = Math.min(10, Math.max(1, Number(count) || 1))
     try {
       const job = await api.startDocumentExcel(company.id, {
         report: docType.name,
@@ -125,8 +131,9 @@ export function GenerateExcelDialog({
         simple_sheets: simpleSheets,
         glossary: glossary,
         gen_tracing: genTrace,
+        count: countValue,
       })
-      start(job.id, 1, () => onGenerated?.())
+      start(job.id, countValue, () => onGenerated?.())
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error))
     }
@@ -174,6 +181,22 @@ export function GenerateExcelDialog({
                 ))}
               </SelectContent>
             </Select>
+          </label>
+          <label className="flex flex-col gap-1.5 text-sm text-muted-foreground">
+            Number of documents
+            <Input
+              type="number"
+              min={1}
+              max={10}
+              value={count}
+              disabled={state.running}
+              onChange={(e) => setCount(e.target.value)}
+            />
+            <span className="text-xs text-muted-foreground">
+              Documents 2+ keep the same layout as the first but with
+              different data — list periods in your instructions, e.g. "one
+              per year: 2012, 2013, 2014".
+            </span>
           </label>
           <label
             className="flex items-center gap-2 text-sm text-muted-foreground"
@@ -290,15 +313,20 @@ export function GenerateExcelDialog({
           </fieldset>
           <JobStatus state={state} />
           {hasResult && state.result && (
-            <a
-              href={api.documentExcelUrl(company.id, state.result.xlsx)}
-              download
-              title={state.result.xlsx}
-              className="flex items-center gap-2 rounded-md border bg-secondary/40 px-3 py-2.5 text-sm text-primary transition-colors hover:bg-secondary/80"
-            >
-              <Download className="size-4 shrink-0" />
-              Download {truncateMiddle(state.result.xlsx)}
-            </a>
+            <div className="flex flex-col gap-2">
+              {state.result.documents.map((doc, index) => (
+                <a
+                  key={`${doc.xlsx}-${index}`}
+                  href={api.documentExcelUrl(company.id, doc.xlsx)}
+                  download
+                  title={doc.xlsx}
+                  className="flex items-center gap-2 rounded-md border bg-secondary/40 px-3 py-2.5 text-sm text-primary transition-colors hover:bg-secondary/80"
+                >
+                  <Download className="size-4 shrink-0" />
+                  Download {truncateMiddle(doc.xlsx)}
+                </a>
+              ))}
+            </div>
           )}
           {submitError && (
             <p className="flex items-start gap-2 text-sm text-destructive">
@@ -309,7 +337,7 @@ export function GenerateExcelDialog({
           <DialogFooter>
             <Button
               type="submit"
-              disabled={state.running || hasResult}
+              disabled={state.running || (hasResult && !state.error)}
             >
               {state.running ? (
                 <LoaderCircle className="animate-spin" />

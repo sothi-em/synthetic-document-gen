@@ -119,11 +119,16 @@ export interface DocumentPdfRequest {
   quick_doc?: boolean
   /** Persist the per-stage generation trace on the document record. */
   gen_tracing?: boolean
+  /** Number of documents to generate (1-10, default 1). */
+  count?: number
 }
 
 export interface PdfJobResult {
-  pdf: string
-  report: string
+  /** One entry per generated document (present even when count is 1). */
+  documents: { pdf: string; report: string }[]
+  /** Legacy single-document fields; set when the request count is 1. */
+  pdf?: string
+  report?: string
 }
 
 export interface DocumentExcelRequest {
@@ -138,11 +143,16 @@ export interface DocumentExcelRequest {
   glossary?: boolean
   /** Persist the per-stage generation trace on the document record. */
   gen_tracing?: boolean
+  /** Number of workbooks to generate (1-10, default 1). */
+  count?: number
 }
 
 export interface ExcelJobResult {
-  xlsx: string
-  report: string
+  /** One entry per generated workbook (present even when count is 1). */
+  documents: { xlsx: string; report: string }[]
+  /** Legacy single-document fields; set when the request count is 1. */
+  xlsx?: string
+  report?: string
 }
 
 /** Per-effect controls for the PNG distress (scanned/aged) pass. */
@@ -266,11 +276,16 @@ export interface DocumentImageRequest {
   distress?: DistressOptions
   /** Persist the per-stage generation trace on the document record. */
   gen_tracing?: boolean
+  /** Number of images to generate (1-10, default 1). */
+  count?: number
 }
 
 export interface ImageJobResult {
-  png: string
-  report: string
+  /** One entry per generated image (present even when count is 1). */
+  documents: { png: string; report: string }[]
+  /** Legacy single-document fields; set when the request count is 1. */
+  png?: string
+  report?: string
 }
 
 export interface CompanySummary {

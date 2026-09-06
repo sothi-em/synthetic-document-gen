@@ -833,9 +833,12 @@ class TestCompanyPdf:
         status = _poll_job(client, job_id)
         assert status["status"] == "done"
         assert status["company_ids"] == [company_db[0]]
+        # count=1 keeps the legacy single-document fields and also carries
+        # the documents list used by the frontend.
         assert status["result"] == {
             "pdf": "acme_report.pdf",
             "report": "Onboarding Guide",
+            "documents": [{"pdf": "acme_report.pdf", "report": "Onboarding Guide"}],
         }
         # Stage log lines from the worker thread were captured.
         assert any("starting" in line for line in status["logs"])
@@ -904,6 +907,100 @@ class TestCompanyPdf:
         status = _poll_job(client, response.json()["id"])
         assert status["status"] == "error"
         assert "not found" in (status["error"] or "")
+
+    def test_count_batch_generates_series(
+        self, client, company_db, monkeypatch, tmp_path
+    ) -> None:
+        from types import SimpleNamespace
+
+        out = tmp_path / "reports"
+        monkeypatch.setenv("DOCUMENTS_DIR", str(out))
+        calls: list[dict] = []
+
+        def fake_generate(company_id, report, **kwargs):
+            calls.append(dict(kwargs))
+            index = kwargs.get("variation_index", 1)
+            return SimpleNamespace(
+                pdf_path=out / f"acme_{index}.pdf",
+                report_name="Onboarding Guide",
+                markdown=f"markdown {index}",
+                plan=f"plan {index}",
+            )
+
+        monkeypatch.setattr(server.document_pdf, "generate_document_pdf", fake_generate)
+        response = client.post(
+            f"/api/companies/{company_db[0]}/pdf",
+            json={"report": "Onboarding Guide", "count": 3},
+        )
+        assert response.status_code == 202
+        assert response.json()["total"] == 3
+        status = _poll_job(client, response.json()["id"])
+        assert status["status"] == "done"
+        assert status["total"] == 3
+        assert status["completed"] == 3
+        assert status["result"] == {
+            "documents": [
+                {"pdf": f"acme_{i}.pdf", "report": "Onboarding Guide"}
+                for i in (1, 2, 3)
+            ]
+        }
+        # Iteration 1 runs standalone; later iterations chain the previous
+        # document's markdown and plan.
+        assert len(calls) == 3
+        assert "reference_markdown" not in calls[0]
+        assert "reuse_plan" not in calls[0]
+        for prev, call in zip(calls, calls[1:]):
+            prev_index = prev.get("variation_index", 1)
+            assert call["reference_markdown"] == f"markdown {prev_index}"
+            assert call["reuse_plan"] == f"plan {prev_index}"
+            assert call["variation_total"] == 3
+
+    def test_count_batch_partial_failure_keeps_results(
+        self, client, company_db, monkeypatch, tmp_path
+    ) -> None:
+        from types import SimpleNamespace
+
+        out = tmp_path / "reports"
+        monkeypatch.setenv("DOCUMENTS_DIR", str(out))
+
+        def fake_generate(company_id, report, **kwargs):
+            index = kwargs.get("variation_index", 1)
+            if index == 3:
+                raise RuntimeError("LLM exploded")
+            return SimpleNamespace(
+                pdf_path=out / f"acme_{index}.pdf",
+                report_name="Onboarding Guide",
+                markdown=f"markdown {index}",
+                plan=f"plan {index}",
+            )
+
+        monkeypatch.setattr(server.document_pdf, "generate_document_pdf", fake_generate)
+        response = client.post(
+            f"/api/companies/{company_db[0]}/pdf",
+            json={"report": "Onboarding Guide", "count": 3},
+        )
+        status = _poll_job(client, response.json()["id"])
+        assert status["status"] == "error"
+        assert "LLM exploded" in (status["error"] or "")
+        assert status["completed"] == 2
+        # The finished documents stay downloadable despite the failure.
+        assert status["result"] == {
+            "documents": [
+                {"pdf": "acme_1.pdf", "report": "Onboarding Guide"},
+                {"pdf": "acme_2.pdf", "report": "Onboarding Guide"},
+            ]
+        }
+
+    def test_count_bounds(self, client, company_db, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("DOCUMENTS_DIR", str(tmp_path))
+        for bad in (0, 11):
+            assert (
+                client.post(
+                    f"/api/companies/{company_db[0]}/pdf",
+                    json={"report": "x", "count": bad},
+                ).status_code
+                == 422
+            )
 
     def test_download_serves_file(
         self, client, company_db, monkeypatch, tmp_path
@@ -1014,9 +1111,12 @@ class TestCompanyExcel:
         status = _poll_job(client, job_id)
         assert status["status"] == "done"
         assert status["company_ids"] == [company_db[0]]
+        # count=1 keeps the legacy single-document fields and also carries
+        # the documents list used by the frontend.
         assert status["result"] == {
             "xlsx": "acme_report.xlsx",
             "report": "Onboarding Guide",
+            "documents": [{"xlsx": "acme_report.xlsx", "report": "Onboarding Guide"}],
         }
         # Stage log lines from the worker thread were captured.
         assert any("starting" in line for line in status["logs"])
@@ -1095,6 +1195,104 @@ class TestCompanyExcel:
         status = _poll_job(client, response.json()["id"])
         assert status["status"] == "error"
         assert "not found" in (status["error"] or "")
+
+    def test_count_batch_generates_series(
+        self, client, company_db, monkeypatch, tmp_path
+    ) -> None:
+        from types import SimpleNamespace
+
+        out = tmp_path / "reports"
+        monkeypatch.setenv("DOCUMENTS_DIR", str(out))
+        calls: list[dict] = []
+
+        def fake_generate(company_id, report, **kwargs):
+            calls.append(dict(kwargs))
+            index = kwargs.get("variation_index", 1)
+            return SimpleNamespace(
+                xlsx_path=out / f"acme_{index}.xlsx",
+                report_name="Onboarding Guide",
+                markdown=f"markdown {index}",
+                plan=f"plan {index}",
+            )
+
+        monkeypatch.setattr(
+            server.document_excel, "generate_document_excel", fake_generate
+        )
+        response = client.post(
+            f"/api/companies/{company_db[0]}/excel",
+            json={"report": "Onboarding Guide", "count": 3},
+        )
+        assert response.status_code == 202
+        assert response.json()["total"] == 3
+        status = _poll_job(client, response.json()["id"])
+        assert status["status"] == "done"
+        assert status["total"] == 3
+        assert status["completed"] == 3
+        assert status["result"] == {
+            "documents": [
+                {"xlsx": f"acme_{i}.xlsx", "report": "Onboarding Guide"}
+                for i in (1, 2, 3)
+            ]
+        }
+        # Iteration 1 runs standalone; later iterations chain the previous
+        # workbook's markdown and plan.
+        assert len(calls) == 3
+        assert "reference_markdown" not in calls[0]
+        assert "reuse_plan" not in calls[0]
+        for prev, call in zip(calls, calls[1:]):
+            prev_index = prev.get("variation_index", 1)
+            assert call["reference_markdown"] == f"markdown {prev_index}"
+            assert call["reuse_plan"] == f"plan {prev_index}"
+            assert call["variation_total"] == 3
+
+    def test_count_batch_partial_failure_keeps_results(
+        self, client, company_db, monkeypatch, tmp_path
+    ) -> None:
+        from types import SimpleNamespace
+
+        out = tmp_path / "reports"
+        monkeypatch.setenv("DOCUMENTS_DIR", str(out))
+
+        def fake_generate(company_id, report, **kwargs):
+            index = kwargs.get("variation_index", 1)
+            if index == 3:
+                raise RuntimeError("LLM exploded")
+            return SimpleNamespace(
+                xlsx_path=out / f"acme_{index}.xlsx",
+                report_name="Onboarding Guide",
+                markdown=f"markdown {index}",
+                plan=f"plan {index}",
+            )
+
+        monkeypatch.setattr(
+            server.document_excel, "generate_document_excel", fake_generate
+        )
+        response = client.post(
+            f"/api/companies/{company_db[0]}/excel",
+            json={"report": "Onboarding Guide", "count": 3},
+        )
+        status = _poll_job(client, response.json()["id"])
+        assert status["status"] == "error"
+        assert "LLM exploded" in (status["error"] or "")
+        assert status["completed"] == 2
+        # The finished workbooks stay downloadable despite the failure.
+        assert status["result"] == {
+            "documents": [
+                {"xlsx": "acme_1.xlsx", "report": "Onboarding Guide"},
+                {"xlsx": "acme_2.xlsx", "report": "Onboarding Guide"},
+            ]
+        }
+
+    def test_count_bounds(self, client, company_db, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("DOCUMENTS_DIR", str(tmp_path))
+        for bad in (0, 11):
+            assert (
+                client.post(
+                    f"/api/companies/{company_db[0]}/excel",
+                    json={"report": "x", "count": bad},
+                ).status_code
+                == 422
+            )
 
     def test_download_serves_file(
         self, client, company_db, monkeypatch, tmp_path
@@ -1215,9 +1413,12 @@ class TestCompanyImage:
         status = _poll_job(client, job_id)
         assert status["status"] == "done"
         assert status["company_ids"] == [company_db[0]]
+        # count=1 keeps the legacy single-document fields and also carries
+        # the documents list used by the frontend.
         assert status["result"] == {
             "png": "acme_report.png",
             "report": "Onboarding Guide",
+            "documents": [{"png": "acme_report.png", "report": "Onboarding Guide"}],
         }
         # Stage log lines from the worker thread were captured.
         assert any("starting" in line for line in status["logs"])
@@ -1329,6 +1530,104 @@ class TestCompanyImage:
         status = _poll_job(client, response.json()["id"])
         assert status["status"] == "error"
         assert "not found" in (status["error"] or "")
+
+    def test_count_batch_generates_series(
+        self, client, company_db, monkeypatch, tmp_path
+    ) -> None:
+        from types import SimpleNamespace
+
+        out = tmp_path / "reports"
+        monkeypatch.setenv("DOCUMENTS_DIR", str(out))
+        calls: list[dict] = []
+
+        def fake_generate(company_id, report, **kwargs):
+            calls.append(dict(kwargs))
+            index = kwargs.get("variation_index", 1)
+            return SimpleNamespace(
+                png_path=out / f"acme_{index}.png",
+                report_name="Onboarding Guide",
+                markdown=f"markdown {index}",
+                plan=f"plan {index}",
+            )
+
+        monkeypatch.setattr(
+            server.document_png, "generate_document_image", fake_generate
+        )
+        response = client.post(
+            f"/api/companies/{company_db[0]}/image",
+            json={"report": "Onboarding Guide", "count": 3},
+        )
+        assert response.status_code == 202
+        assert response.json()["total"] == 3
+        status = _poll_job(client, response.json()["id"])
+        assert status["status"] == "done"
+        assert status["total"] == 3
+        assert status["completed"] == 3
+        assert status["result"] == {
+            "documents": [
+                {"png": f"acme_{i}.png", "report": "Onboarding Guide"}
+                for i in (1, 2, 3)
+            ]
+        }
+        # Iteration 1 runs standalone; later iterations chain the previous
+        # image's markdown and plan.
+        assert len(calls) == 3
+        assert "reference_markdown" not in calls[0]
+        assert "reuse_plan" not in calls[0]
+        for prev, call in zip(calls, calls[1:]):
+            prev_index = prev.get("variation_index", 1)
+            assert call["reference_markdown"] == f"markdown {prev_index}"
+            assert call["reuse_plan"] == f"plan {prev_index}"
+            assert call["variation_total"] == 3
+
+    def test_count_batch_partial_failure_keeps_results(
+        self, client, company_db, monkeypatch, tmp_path
+    ) -> None:
+        from types import SimpleNamespace
+
+        out = tmp_path / "reports"
+        monkeypatch.setenv("DOCUMENTS_DIR", str(out))
+
+        def fake_generate(company_id, report, **kwargs):
+            index = kwargs.get("variation_index", 1)
+            if index == 3:
+                raise RuntimeError("LLM exploded")
+            return SimpleNamespace(
+                png_path=out / f"acme_{index}.png",
+                report_name="Onboarding Guide",
+                markdown=f"markdown {index}",
+                plan=f"plan {index}",
+            )
+
+        monkeypatch.setattr(
+            server.document_png, "generate_document_image", fake_generate
+        )
+        response = client.post(
+            f"/api/companies/{company_db[0]}/image",
+            json={"report": "Onboarding Guide", "count": 3},
+        )
+        status = _poll_job(client, response.json()["id"])
+        assert status["status"] == "error"
+        assert "LLM exploded" in (status["error"] or "")
+        assert status["completed"] == 2
+        # The finished images stay downloadable despite the failure.
+        assert status["result"] == {
+            "documents": [
+                {"png": "acme_1.png", "report": "Onboarding Guide"},
+                {"png": "acme_2.png", "report": "Onboarding Guide"},
+            ]
+        }
+
+    def test_count_bounds(self, client, company_db, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("DOCUMENTS_DIR", str(tmp_path))
+        for bad in (0, 11):
+            assert (
+                client.post(
+                    f"/api/companies/{company_db[0]}/image",
+                    json={"report": "x", "count": bad},
+                ).status_code
+                == 422
+            )
 
     def test_download_serves_file(
         self, client, company_db, monkeypatch, tmp_path

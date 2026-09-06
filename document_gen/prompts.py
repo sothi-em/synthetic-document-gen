@@ -102,6 +102,9 @@ Document to draft
 Additional user instructions
 <user_input>
 
+Series variation
+<variation>
+
 Task
 Draft the full content of the requested document for this company, in
 **markdown**.
@@ -302,6 +305,9 @@ Document to draft
 Additional user instructions
 <user_input>
 
+Series variation
+<variation>
+
 Task
 Write a short markdown document (1-3 sections, roughly one page):
 1. First line: a `#` title — 3-6 words naming this specific document.
@@ -436,6 +442,9 @@ Workbook to draft
 
 Additional user instructions
 <user_input>
+
+Series variation
+<variation>
 
 Mode
 <mode>
@@ -592,6 +601,9 @@ Document to draft
 
 Additional user instructions
 <user_input>
+
+Series variation
+<variation>
 
 Task
 Draft the full content of the requested document for this company, in

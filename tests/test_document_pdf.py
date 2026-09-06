@@ -79,6 +79,40 @@ class TestContentFiguresInstruction:
         assert "back-to-back" in text
 
 
+class TestVariationInstruction:
+    """The <variation> slot text: standalone default or series guidance."""
+
+    def test_standalone_default(self) -> None:
+        assert (
+            document_pdf.variation_instruction(1, 1)
+            == "No — this is a standalone document."
+        )
+
+    def test_first_of_series_is_standalone(self) -> None:
+        # Document 1 of a series is generated as today (no reference yet).
+        assert (
+            document_pdf.variation_instruction(1, 3)
+            == "No — this is a standalone document."
+        )
+
+    def test_variation_carries_index_total_and_reference(self) -> None:
+        text = document_pdf.variation_instruction(
+            2, 3, "# Reference Title\n\n| a | b |\n|---|---|\n| 1 | 2 |"
+        )
+        assert "document 2 of 3" in text
+        assert "exact same structure" in text
+        assert "all data values" in text
+        assert "value at position 2" in text
+        # The reference markdown is embedded in the slot text.
+        assert "# Reference Title" in text
+        assert "| 1 | 2 |" in text
+
+    def test_missing_reference_markdown_is_marked_unavailable(self) -> None:
+        for reference in (None, "   "):
+            text = document_pdf.variation_instruction(2, 3, reference)
+            assert "(unavailable)" in text
+
+
 class FakeBackend:
     """Canned chat backend: plan for stage 0, markdown for stage 1, HTML for stage 2.
 
@@ -376,6 +410,32 @@ class TestSanitizeReportHtml:
 # ---------------------------------------------------------------------------
 
 
+class TestDocumentArtifactPlan:
+    """The artifact exposes the plan used for the run (for chaining)."""
+
+    def test_plan_defaults_to_none(self) -> None:
+        artifact = document_pdf.DocumentArtifact(
+            company_id=1,
+            report_name="Report",
+            markdown="# T",
+            html="<html/>",
+            pdf_path=Path("t.pdf"),
+        )
+        assert artifact.plan is None
+
+    def test_plan_holds_document_plan(self) -> None:
+        plan = FakeBackend.PLAN
+        artifact = document_pdf.DocumentArtifact(
+            company_id=1,
+            report_name="Report",
+            markdown="# T",
+            html="<html/>",
+            pdf_path=Path("t.pdf"),
+            plan=plan,
+        )
+        assert artifact.plan is plan
+
+
 class TestGenerateReportPdf:
     def test_end_to_end(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         company_id = _save_company()
@@ -441,6 +501,90 @@ class TestGenerateReportPdf:
         # The per-stage trace is returned on the artifact and stored on
         # the record as ``gen_tracing``.
         _check_trace(artifact, backend, company_id)
+
+        # The plan used for the run is exposed on the artifact so a
+        # server can chain variations from it.
+        assert artifact.plan == FakeBackend.PLAN
+        # Default (standalone) run: the <variation> slot carries the
+        # standalone text, and the trace records the variation flags.
+        assert "No — this is a standalone document." in backend.calls[0]["prompt"]
+        assert artifact.gen_tracing["variation_index"] == 1
+        assert artifact.gen_tracing["variation_total"] == 1
+        assert artifact.gen_tracing["stages"]["plan"]["reused"] is False
+
+    def test_variation_reuses_plan_and_injects_reference(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        company_id = _save_company()
+        backend = FakeBackend()
+        monkeypatch.setattr(document_pdf, "get_chat_backend", lambda: backend)
+        _stub_pdf(monkeypatch)
+
+        # Reference document (1 of 2): generated exactly as today, with
+        # the standalone variation slot and a fresh plan LLM call.
+        first = document_pdf.generate_document_pdf(
+            company_id,
+            "Onboarding Guide",
+            output_dir=tmp_path,
+            variation_index=1,
+            variation_total=2,
+            gen_tracing=True,
+        )
+        assert first.plan == FakeBackend.PLAN
+        assert "No — this is a standalone document." in backend.calls[0]["prompt"]
+        assert first.gen_tracing["variation_index"] == 1
+        assert first.gen_tracing["variation_total"] == 2
+        assert first.gen_tracing["stages"]["plan"]["reused"] is False
+        assert len(backend.query_calls) == 1  # the plan call
+
+        # Document 2 of 2: reuses the reference plan (no plan LLM call)
+        # and embeds the reference markdown in the content prompt.
+        second = document_pdf.generate_document_pdf(
+            company_id,
+            "Onboarding Guide",
+            output_dir=tmp_path,
+            variation_index=2,
+            variation_total=2,
+            reference_markdown=first.markdown,
+            reuse_plan=first.plan,
+            gen_tracing=True,
+        )
+        assert len(backend.query_calls) == 1  # no new plan call
+        markdown_prompt = backend.calls[2]["prompt"]
+        assert "document 2 of 2" in markdown_prompt
+        assert "Reference document (markdown)" in markdown_prompt
+        assert FakeBackend.MARKDOWN in markdown_prompt
+
+        # The reused plan drives the HTML stage (same design brief as
+        # the reference document).
+        assert second.plan == first.plan
+        assert FakeBackend.PLAN.model_dump(mode="json") == (
+            second.gen_tracing["stages"]["plan"]["output"]
+        )
+        assert second.gen_tracing["stages"]["plan"]["reused"] is True
+        assert "skipped" in second.gen_tracing["stages"]["plan"]["prompt"]
+        assert second.gen_tracing["variation_index"] == 2
+        assert second.gen_tracing["variation_total"] == 2
+
+    def test_variation_without_reuse_plan_falls_back_to_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        company_id = _save_company()
+        backend = FakeBackend()
+        monkeypatch.setattr(document_pdf, "get_chat_backend", lambda: backend)
+        _stub_pdf(monkeypatch)
+
+        artifact = document_pdf.generate_document_pdf(
+            company_id,
+            "Onboarding Guide",
+            output_dir=tmp_path,
+            variation_index=2,
+            variation_total=2,
+            reference_markdown="# Ref",
+        )
+        assert len(backend.query_calls) == 0  # plan call skipped
+        assert artifact.plan is document_pdf._DEFAULT_DOCUMENT_PLAN
+        assert artifact.gen_tracing["stages"]["plan"]["used_default_fallback"] is True
 
     def test_quick_doc_cuts_token_caps_by_80_percent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

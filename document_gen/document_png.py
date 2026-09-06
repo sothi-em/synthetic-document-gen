@@ -57,6 +57,7 @@ from document_gen.document_excel import _extract_figure_specs
 from document_gen.document_pdf import (
     DOCUMENTS_DIR_ENV,
     _AT_PAGE,
+    _DEFAULT_DOCUMENT_PLAN,
     _STYLE_BLOCK,
     _content_figures_instruction,
     _design_brief_text,
@@ -71,6 +72,7 @@ from document_gen.document_pdf import (
     _unique_path,
     resolve_document_type,
     resolve_output_dir,
+    variation_instruction,
 )
 from document_gen.generators.png_gen import (
     EFFECT_SEED_NAMES,
@@ -81,6 +83,7 @@ from document_gen.generators.png_gen import (
 from document_gen.llm import get_chat_backend
 from document_gen.models import (
     DistressOptions,
+    DocumentPlan,
     DocumentType,
     FigureSpec,
     SyntheticCompany,
@@ -315,6 +318,7 @@ class ImageArtifact:
     png_path: Path
     figures: list[FigureSpec] = field(default_factory=list)
     gen_tracing: dict[str, Any] | None = None
+    plan: DocumentPlan | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +336,10 @@ def generate_document_image(
     a4_aspect: bool = True,
     distress: DistressOptions | None = None,
     gen_tracing: bool = False,
+    variation_index: int = 1,
+    variation_total: int = 1,
+    reference_markdown: str | None = None,
+    reuse_plan: DocumentPlan | None = None,
 ) -> ImageArtifact:
     """Generate a single-page PNG image document for a stored company.
 
@@ -382,12 +390,22 @@ def generate_document_image(
             trace is always
             built and returned on the artifact; this flag only
             controls database persistence.
+        variation_index: 1-based index of this image in a generated
+            series (1 = the reference image, generated as today).
+        variation_total: Total number of images in the series (1 for a
+            standalone image).
+        reference_markdown: Markdown of the reference (previous) image,
+            injected into the content prompt when *variation_index* > 1.
+        reuse_plan: The reference image's plan. When *variation_index*
+            > 1 the plan LLM call is skipped and this plan is reused so
+            the series keeps one design; when ``None`` the default
+            fallback plan is used.
 
     Returns:
         The generated :class:`ImageArtifact` (markdown, HTML, PNG path,
-        figure specs, and the aggregated per-stage ``gen_tracing``
-        trace; the trace is stored on the document record only
-        when *gen_tracing* is ``True``).
+        figure specs, the plan used for this run, and the aggregated
+        per-stage ``gen_tracing`` trace; the trace is stored on the
+        document record only when *gen_tracing* is ``True``).
 
     Raises:
         ValueError: When the company or document type is missing, or when
@@ -443,27 +461,50 @@ def generate_document_image(
         "report": report_type.name,
         "user_input": user_input,
         "a4_aspect": a4_aspect,
+        "variation_index": variation_index,
+        "variation_total": variation_total,
         "stages": {},
     }
 
     # Stage 0: quick LLM plan — design brief for the HTML+CSS stage
     # (falls back to defaults on failure). The TOC decision is ignored:
-    # image documents never carry a table of contents.
-    plan, plan_prompt, plan_elapsed, plan_used_default = _plan_document(
-        backend,
-        profile,
-        report_type,
-        kinds,
-        quick_doc=False,
-        user_input=user_input,
-        seed=seed,
-        model_name=model_name,
-    )
+    # image documents never carry a table of contents. Variation images
+    # skip the call and reuse the reference image's plan so the whole
+    # series shares one design.
+    is_variation = variation_index > 1
+    if is_variation:
+        plan = reuse_plan
+        if plan is None:
+            logger.warning(
+                "Image document: variation %d/%d has no reusable plan; "
+                "falling back to the default plan",
+                variation_index,
+                variation_total,
+            )
+            plan = _DEFAULT_DOCUMENT_PLAN
+        plan_prompt = (
+            "(skipped: reusing the reference document's plan for "
+            f"variation {variation_index} of {variation_total})"
+        )
+        plan_elapsed = 0.0
+        plan_used_default = plan is _DEFAULT_DOCUMENT_PLAN
+    else:
+        plan, plan_prompt, plan_elapsed, plan_used_default = _plan_document(
+            backend,
+            profile,
+            report_type,
+            kinds,
+            quick_doc=False,
+            user_input=user_input,
+            seed=seed,
+            model_name=model_name,
+        )
     trace["stages"]["plan"] = {
         "prompt": plan_prompt,
         "output": plan.model_dump(mode="json"),
         "elapsed_s": round(plan_elapsed, 3),
         "used_default_fallback": plan_used_default,
+        "reused": is_variation,
     }
 
     # Stage 1: single-page markdown draft (no TOC slot: image documents
@@ -479,6 +520,10 @@ def generate_document_image(
         .replace(
             "<user_input>",
             user_input.strip() if user_input and user_input.strip() else "None.",
+        )
+        .replace(
+            "<variation>",
+            variation_instruction(variation_index, variation_total, reference_markdown),
         )
         .replace("<figures>", _content_figures_instruction(kinds, quick=True))
     )
@@ -659,4 +704,5 @@ def generate_document_image(
         png_path=path,
         figures=figure_specs,
         gen_tracing=trace,
+        plan=plan,
     )

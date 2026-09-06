@@ -350,6 +350,82 @@ class TestGenerateDocumentExcel:
 
         _check_trace(artifact, backend, company_id)
 
+        # The plan used for the run is exposed on the artifact (for
+        # chaining variations) and the default run carries the
+        # standalone variation slot.
+        assert artifact.plan == FakeBackend.PLAN
+        assert "No — this is a standalone document." in backend.calls[0]["prompt"]
+        assert artifact.gen_tracing["variation_index"] == 1
+        assert artifact.gen_tracing["variation_total"] == 1
+        assert artifact.gen_tracing["stages"]["plan"]["reused"] is False
+
+    def test_variation_reuses_plan_and_injects_reference(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = FakeBackend()
+
+        # Reference workbook (1 of 2): plan + styling structured calls.
+        first = _run(
+            tmp_path,
+            monkeypatch,
+            backend,
+            variation_index=1,
+            variation_total=2,
+            gen_tracing=True,
+        )
+        assert first.plan == FakeBackend.PLAN
+        assert "No — this is a standalone document." in backend.calls[0]["prompt"]
+        assert [c["model"] for c in backend.query_calls] == [ExcelPlan, ExcelDoc]
+
+        # Workbook 2 of 2: the plan call is skipped and the reference
+        # markdown is embedded in the content prompt.
+        second = _run(
+            tmp_path,
+            monkeypatch,
+            backend,
+            variation_index=2,
+            variation_total=2,
+            reference_markdown=first.markdown,
+            reuse_plan=first.plan,
+            gen_tracing=True,
+        )
+        assert [c["model"] for c in backend.query_calls] == [
+            ExcelPlan,
+            ExcelDoc,
+            ExcelDoc,
+        ]
+        markdown_prompt = backend.calls[1]["prompt"]
+        assert "document 2 of 2" in markdown_prompt
+        assert "Reference document (markdown)" in markdown_prompt
+        assert FakeBackend.MARKDOWN in markdown_prompt
+
+        # The reused plan drives the styling stage (same sheet names and
+        # design as the reference workbook).
+        assert second.plan == first.plan
+        styling_prompt = backend.query_calls[2]["prompt"]
+        assert "Planned sheet names: Cover, Sales" in styling_prompt
+        assert second.gen_tracing["stages"]["plan"]["reused"] is True
+        assert "skipped" in second.gen_tracing["stages"]["plan"]["prompt"]
+        assert second.gen_tracing["variation_index"] == 2
+        assert second.gen_tracing["variation_total"] == 2
+
+    def test_variation_without_reuse_plan_falls_back_to_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = FakeBackend()
+        artifact = _run(
+            tmp_path,
+            monkeypatch,
+            backend,
+            variation_index=2,
+            variation_total=2,
+            reference_markdown="# Ref",
+        )
+        # Only the styling structured call; the plan call was skipped.
+        assert [c["model"] for c in backend.query_calls] == [ExcelDoc]
+        assert artifact.plan is document_excel._DEFAULT_EXCEL_PLAN
+        assert artifact.gen_tracing["stages"]["plan"]["used_default_fallback"] is True
+
     def test_trace_rerender_reproduces_workbook(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -71,6 +71,7 @@ class TestPromptTemplates:
                 "<company_profile>": "profile text",
                 "<document_type>": "Onboarding Guide",
                 "<user_input>": "focus on Q3",
+                "<variation>": "No — this is a standalone document.",
                 "<figures>": "None. Do not include any figures.",
             },
         )
@@ -137,6 +138,7 @@ class TestExcelPromptTemplates:
                 "<company_profile>": "profile text",
                 "<document_type>": "Quarterly Sales Workbook",
                 "<user_input>": "focus on Q3",
+                "<variation>": "No — this is a standalone document.",
                 "<figures>": "None. Do not include any figures.",
                 "<mode>": "default: cover + data-dictionary + data sheets",
             },
@@ -197,6 +199,7 @@ class TestQuickPromptTemplates:
                 "<company_profile>": "profile text",
                 "<document_type>": "Onboarding Guide",
                 "<user_input>": "focus on Q3",
+                "<variation>": "No — this is a standalone document.",
                 "<figures>": "None. Do not include any figures.",
             },
         )
@@ -247,6 +250,7 @@ class TestImagePromptTemplates:
                 "<company_profile>": "profile text",
                 "<document_type>": "Product Flyer",
                 "<user_input>": "focus on Q3",
+                "<variation>": "No — this is a standalone document.",
                 "<figures>": "None. Do not include any figures.",
             },
         )
@@ -280,3 +284,18 @@ class TestImagePromptTemplates:
         )
         # The page size lives in the system prompt, not the user prompt.
         assert "<page_size>" not in image_html_prompt
+
+
+class TestVariationSlot:
+    """The <variation> slot must exist in every content prompt so series
+    documents 2..N can be drafted against the reference document."""
+
+    def test_slot_present_in_all_content_prompts(self) -> None:
+        for template in (
+            document_content_prompt,
+            quick_document_content_prompt,
+            excel_content_prompt,
+            image_content_prompt,
+        ):
+            assert template.count("<variation>") == 1
+            assert "Series variation" in template

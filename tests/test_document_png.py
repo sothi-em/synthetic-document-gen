@@ -337,6 +337,61 @@ class TestGenerateDocumentImage:
 
         _check_trace(artifact, backend, company_id)
 
+        # The plan used for the run is exposed on the artifact (for
+        # chaining variations) and the default run carries the
+        # standalone variation slot.
+        assert artifact.plan == FakeBackend.PLAN
+        assert "No — this is a standalone document." in backend.calls[0]["prompt"]
+        assert artifact.gen_tracing["variation_index"] == 1
+        assert artifact.gen_tracing["variation_total"] == 1
+        assert artifact.gen_tracing["stages"]["plan"]["reused"] is False
+
+    def test_variation_reuses_plan_and_injects_reference(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = FakeBackend()
+
+        # Reference image (1 of 2): the plan LLM call runs as today.
+        first = _run(
+            tmp_path,
+            monkeypatch,
+            backend,
+            variation_index=1,
+            variation_total=2,
+            gen_tracing=True,
+        )
+        assert first.plan == FakeBackend.PLAN
+        assert "No — this is a standalone document." in backend.calls[0]["prompt"]
+        assert [c["model"] for c in backend.query_calls] == [DocumentPlan]
+
+        # Image 2 of 2: the plan call is skipped and the reference
+        # markdown is embedded in the content prompt.
+        second = _run(
+            tmp_path,
+            monkeypatch,
+            backend,
+            variation_index=2,
+            variation_total=2,
+            reference_markdown=first.markdown,
+            reuse_plan=first.plan,
+            gen_tracing=True,
+        )
+        # Still exactly one structured call (the reference's plan).
+        assert [c["model"] for c in backend.query_calls] == [DocumentPlan]
+        markdown_prompt = backend.calls[2]["prompt"]
+        assert "document 2 of 2" in markdown_prompt
+        assert "Reference document (markdown)" in markdown_prompt
+        assert FakeBackend.MARKDOWN in markdown_prompt
+
+        # The reused plan drives the HTML stage (same design brief as
+        # the reference image).
+        assert second.plan == first.plan
+        assert "modern minimal" in backend.calls[3]["prompt"]
+        assert second.gen_tracing["stages"]["plan"]["reused"] is True
+        assert "skipped" in second.gen_tracing["stages"]["plan"]["prompt"]
+        assert second.gen_tracing["variation_index"] == 2
+        assert second.gen_tracing["variation_total"] == 2
+
     def test_a4_aspect_false_uses_content_sized_page(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

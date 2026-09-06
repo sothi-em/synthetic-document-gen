@@ -23,6 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
@@ -69,6 +70,7 @@ export function GenerateImageDialog({
 }: GenerateImageDialogProps) {
   const [userInput, setUserInput] = useState("")
   const [model, setModel] = useState("")
+  const [count, setCount] = useState("1")
   const [genTrace, setGenTrace] = useState(false)
   const [a4Aspect, setA4Aspect] = useState(true)
   const [figureKinds, setFigureKinds] = useState<Record<FigureKind, boolean>>(
@@ -84,6 +86,7 @@ export function GenerateImageDialog({
     if (open) {
       setUserInput("")
       setModel("")
+      setCount("1")
       setGenTrace(false)
       setA4Aspect(true)
       setFigureKinds(
@@ -96,7 +99,9 @@ export function GenerateImageDialog({
     }
   }, [open, docType, reset])
 
-  const hasResult = state.finished && !state.error && !!state.result
+  // Partial results (job finished with an error) are shown too, with the
+  // error message still visible via JobStatus.
+  const hasResult = state.finished && !!state.result
 
   // Keep the dialog open while a generation job is running (blocks the X,
   // Escape, and outside-click dismissal).
@@ -109,6 +114,7 @@ export function GenerateImageDialog({
     event.preventDefault()
     if (state.running) return
     setSubmitError(null)
+    const countValue = Math.min(10, Math.max(1, Number(count) || 1))
     try {
       const job = await api.startDocumentImage(company.id, {
         report: docType.name,
@@ -121,8 +127,9 @@ export function GenerateImageDialog({
         // undistressed; distress is applied later from the preview
         // editor (all settings off by default).
         gen_tracing: genTrace,
+        count: countValue,
       })
-      start(job.id, 1, () => onGenerated?.())
+      start(job.id, countValue, () => onGenerated?.())
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error))
     }
@@ -169,6 +176,22 @@ export function GenerateImageDialog({
                 ))}
               </SelectContent>
             </Select>
+          </label>
+          <label className="flex flex-col gap-1.5 text-sm text-muted-foreground">
+            Number of documents
+            <Input
+              type="number"
+              min={1}
+              max={10}
+              value={count}
+              disabled={state.running}
+              onChange={(e) => setCount(e.target.value)}
+            />
+            <span className="text-xs text-muted-foreground">
+              Documents 2+ keep the same layout as the first but with
+              different data — list periods in your instructions, e.g. "one
+              per year: 2012, 2013, 2014".
+            </span>
           </label>
           <label
             className="flex items-center gap-2 text-sm text-muted-foreground"
@@ -231,15 +254,20 @@ export function GenerateImageDialog({
           </fieldset>
           <JobStatus state={state} />
           {hasResult && state.result && (
-            <a
-              href={api.documentImageUrl(company.id, state.result.png)}
-              download
-              title={state.result.png}
-              className="flex items-center gap-2 rounded-md border bg-secondary/40 px-3 py-2.5 text-sm text-primary transition-colors hover:bg-secondary/80"
-            >
-              <Download className="size-4 shrink-0" />
-              Download {truncateMiddle(state.result.png)}
-            </a>
+            <div className="flex flex-col gap-2">
+              {state.result.documents.map((doc, index) => (
+                <a
+                  key={`${doc.png}-${index}`}
+                  href={api.documentImageUrl(company.id, doc.png)}
+                  download
+                  title={doc.png}
+                  className="flex items-center gap-2 rounded-md border bg-secondary/40 px-3 py-2.5 text-sm text-primary transition-colors hover:bg-secondary/80"
+                >
+                  <Download className="size-4 shrink-0" />
+                  Download {truncateMiddle(doc.png)}
+                </a>
+              ))}
+            </div>
           )}
           {submitError && (
             <p className="flex items-start gap-2 text-sm text-destructive">
@@ -250,7 +278,7 @@ export function GenerateImageDialog({
           <DialogFooter>
             <Button
               type="submit"
-              disabled={state.running || hasResult}
+              disabled={state.running || (hasResult && !state.error)}
             >
               {state.running ? (
                 <LoaderCircle className="animate-spin" />

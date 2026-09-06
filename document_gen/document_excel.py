@@ -100,6 +100,7 @@ class ExcelArtifact:
     xlsx_path: Path
     figures: list[FigureSpec] = field(default_factory=list)
     gen_tracing: dict[str, Any] | None = None
+    plan: ExcelPlan | None = None
 
 
 #: Fallback plan used when the workbook-plan LLM call fails: a neutral
@@ -385,6 +386,10 @@ def generate_document_excel(
     simple_sheets: bool = False,
     glossary: bool = False,
     gen_tracing: bool = False,
+    variation_index: int = 1,
+    variation_total: int = 1,
+    reference_markdown: str | None = None,
+    reuse_plan: ExcelPlan | None = None,
 ) -> ExcelArtifact:
     """Generate an Excel workbook for a stored company.
 
@@ -424,12 +429,22 @@ def generate_document_excel(
             document record under the ``gen_tracing`` field.
             The trace is always built and returned on the artifact;
             this flag only controls database persistence.
+        variation_index: 1-based index of this workbook in a generated
+            series (1 = the reference workbook, generated as today).
+        variation_total: Total number of workbooks in the series (1 for a
+            standalone workbook).
+        reference_markdown: Markdown of the reference (previous) workbook,
+            injected into the content prompt when *variation_index* > 1.
+        reuse_plan: The reference workbook's plan. When *variation_index*
+            > 1 the plan LLM call is skipped and this plan is reused so
+            the series keeps the same sheet names and design; when
+            ``None`` the default fallback plan is used.
 
     Returns:
         The generated :class:`ExcelArtifact` (markdown, value-filled
-        ExcelDoc, xlsx path, figure specs, and the aggregated per-stage
-        ``gen_tracing`` trace; the trace is stored on the document
-        record only when *gen_tracing* is ``True``).
+        ExcelDoc, xlsx path, figure specs, the plan used for this run, and
+        the aggregated per-stage ``gen_tracing`` trace; the trace is stored
+        on the document record only when *gen_tracing* is ``True``).
 
     Raises:
         ValueError: When the company or document type is missing, or when
@@ -487,28 +502,51 @@ def generate_document_excel(
         "quick_doc": quick_doc,
         "simple_sheets": simple_sheets,
         "glossary": glossary,
+        "variation_index": variation_index,
+        "variation_total": variation_total,
         "stages": {},
     }
 
     # Stage 0: quick LLM plan — sheet names + design brief for the
-    # styling stage (falls back to defaults on failure).
-    plan, plan_prompt, plan_elapsed, plan_used_default = _plan_workbook(
-        backend,
-        profile,
-        report_type,
-        kinds,
-        simple_sheets,
-        glossary,
-        user_input,
-        seed,
-        model_name,
-        thinking,
-    )
+    # styling stage (falls back to defaults on failure). Variation
+    # workbooks skip the call and reuse the reference workbook's plan so
+    # the whole series shares one design and sheet layout.
+    is_variation = variation_index > 1
+    if is_variation:
+        plan = reuse_plan
+        if plan is None:
+            logger.warning(
+                "Excel document: variation %d/%d has no reusable plan; "
+                "falling back to the default plan",
+                variation_index,
+                variation_total,
+            )
+            plan = _DEFAULT_EXCEL_PLAN
+        plan_prompt = (
+            "(skipped: reusing the reference workbook's plan for "
+            f"variation {variation_index} of {variation_total})"
+        )
+        plan_elapsed = 0.0
+        plan_used_default = plan is _DEFAULT_EXCEL_PLAN
+    else:
+        plan, plan_prompt, plan_elapsed, plan_used_default = _plan_workbook(
+            backend,
+            profile,
+            report_type,
+            kinds,
+            simple_sheets,
+            glossary,
+            user_input,
+            seed,
+            model_name,
+            thinking,
+        )
     trace["stages"]["plan"] = {
         "prompt": plan_prompt,
         "output": plan.model_dump(mode="json"),
         "elapsed_s": round(plan_elapsed, 3),
         "used_default_fallback": plan_used_default,
+        "reused": is_variation,
     }
 
     # Stage 1: markdown draft focused on data tables.
@@ -523,6 +561,12 @@ def generate_document_excel(
         .replace(
             "<user_input>",
             user_input.strip() if user_input and user_input.strip() else "None.",
+        )
+        .replace(
+            "<variation>",
+            document_pdf.variation_instruction(
+                variation_index, variation_total, reference_markdown
+            ),
         )
         .replace("<mode>", _mode_text(simple_sheets, glossary))
         .replace(
@@ -676,4 +720,5 @@ def generate_document_excel(
         xlsx_path=path,
         figures=figure_specs,
         gen_tracing=trace,
+        plan=plan,
     )

@@ -124,6 +124,7 @@ class DocumentArtifact:
     pdf_path: Path
     figures: list[FigureSpec] = field(default_factory=list)
     gen_tracing: dict[str, Any] | None = None
+    plan: DocumentPlan | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +527,45 @@ def _plan_document(
     return plan, prompt, elapsed, False
 
 
+def variation_instruction(
+    variation_index: int,
+    variation_total: int,
+    reference_markdown: str | None = None,
+) -> str:
+    """Build the ``<variation>`` instruction for the content prompts.
+
+    For the first document of a series (or a standalone document) the
+    slot carries the standalone default. For later documents it explains
+    that the draft must mirror the reference document's structure with
+    different data values, and embeds the reference markdown.
+
+    Args:
+        variation_index: 1-based index of this document in the series.
+        variation_total: Total number of documents in the series.
+        reference_markdown: Markdown of the reference (previous) document.
+            Only used when *variation_index* > 1.
+
+    Returns:
+        The instruction text for the ``<variation>`` prompt slot.
+    """
+    if variation_index <= 1:
+        return "No — this is a standalone document."
+    reference = (reference_markdown or "").strip() or "(unavailable)"
+    return (
+        f"Yes — this is document {variation_index} of {variation_total} in "
+        "a series based on a reference document (its full markdown is "
+        "included below). Keep the **exact same structure** as the "
+        "reference: same title pattern, sections, tables, column headers, "
+        "and figure placements. Change **all data values** to different, "
+        "internally consistent, plausible values. If the user instructions "
+        "list ordered values for the series (e.g. years 2012, 2013, 2014), "
+        f"use the value at position {variation_index} and update the title "
+        "accordingly.\n\n"
+        "Reference document (markdown)\n"
+        f"{reference}"
+    )
+
+
 def _toc_instruction(include_toc: bool) -> str:
     """Build the ``<toc>`` instruction for the stage-1 markdown prompt.
 
@@ -634,6 +674,10 @@ def generate_document_pdf(
     figure_kinds: list[str] | None = None,
     quick_doc: bool = False,
     gen_tracing: bool = False,
+    variation_index: int = 1,
+    variation_total: int = 1,
+    reference_markdown: str | None = None,
+    reuse_plan: DocumentPlan | None = None,
 ) -> DocumentArtifact:
     """Generate a PDF document for a stored company.
 
@@ -670,12 +714,22 @@ def generate_document_pdf(
             document record under the ``gen_tracing`` field.
             The trace is always built and returned on the artifact;
             this flag only controls database persistence.
+        variation_index: 1-based index of this document in a generated
+            series (1 = the reference document, generated as today).
+        variation_total: Total number of documents in the series (1 for a
+            standalone document).
+        reference_markdown: Markdown of the previous (reference) document,
+            injected into the content prompt when *variation_index* > 1.
+        reuse_plan: The reference document's plan. When *variation_index*
+            > 1 the plan LLM call is skipped and this plan is reused so
+            the series keeps one design (TOC decision, palette,
+            typography); when ``None`` the default fallback plan is used.
 
     Returns:
         The generated :class:`DocumentArtifact` (markdown, HTML, PDF path,
-        figure specs, and the aggregated per-stage ``gen_tracing``
-        trace; the trace is stored on the document record only
-        when *gen_tracing* is ``True``).
+        figure specs, the plan used for this run, and the aggregated
+        per-stage ``gen_tracing`` trace; the trace is stored on the
+        document record only when *gen_tracing* is ``True``).
 
     Raises:
         ValueError: When the company or document type is missing, or when
@@ -727,26 +781,49 @@ def generate_document_pdf(
         "report": report_type.name,
         "user_input": user_input,
         "quick_doc": quick_doc,
+        "variation_index": variation_index,
+        "variation_total": variation_total,
         "stages": {},
     }
 
     # Stage 0: quick LLM plan — TOC decision + design brief for the
-    # HTML+CSS stage (falls back to defaults on failure).
-    plan, plan_prompt, plan_elapsed, plan_used_default = _plan_document(
-        backend,
-        profile,
-        report_type,
-        kinds,
-        quick_doc,
-        user_input,
-        seed,
-        model_name,
-    )
+    # HTML+CSS stage (falls back to defaults on failure). Variation
+    # documents skip the call and reuse the reference document's plan so
+    # the whole series shares one design.
+    is_variation = variation_index > 1
+    if is_variation:
+        plan = reuse_plan
+        if plan is None:
+            logger.warning(
+                "PDF document: variation %d/%d has no reusable plan; "
+                "falling back to the default plan",
+                variation_index,
+                variation_total,
+            )
+            plan = _DEFAULT_DOCUMENT_PLAN
+        plan_prompt = (
+            "(skipped: reusing the reference document's plan for "
+            f"variation {variation_index} of {variation_total})"
+        )
+        plan_elapsed = 0.0
+        plan_used_default = plan is _DEFAULT_DOCUMENT_PLAN
+    else:
+        plan, plan_prompt, plan_elapsed, plan_used_default = _plan_document(
+            backend,
+            profile,
+            report_type,
+            kinds,
+            quick_doc,
+            user_input,
+            seed,
+            model_name,
+        )
     trace["stages"]["plan"] = {
         "prompt": plan_prompt,
         "output": plan.model_dump(mode="json"),
         "elapsed_s": round(plan_elapsed, 3),
         "used_default_fallback": plan_used_default,
+        "reused": is_variation,
     }
 
     report_type_text = (
@@ -765,6 +842,10 @@ def generate_document_pdf(
         .replace(
             "<user_input>",
             user_input.strip() if user_input and user_input.strip() else "None.",
+        )
+        .replace(
+            "<variation>",
+            variation_instruction(variation_index, variation_total, reference_markdown),
         )
         .replace("<figures>", _content_figures_instruction(kinds, quick=quick_doc))
     )
@@ -961,4 +1042,5 @@ def generate_document_pdf(
         pdf_path=path,
         figures=figure_specs,
         gen_tracing=trace,
+        plan=plan,
     )

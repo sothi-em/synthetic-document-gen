@@ -219,6 +219,16 @@ class DocumentPdfRequest(BaseModel):
             "gen_tracing field."
         ),
     )
+    count: int = Field(
+        default=1,
+        ge=1,
+        le=10,
+        description=(
+            "Number of documents to generate (1-10, default 1). Documents "
+            "2+ keep the same structure as the first but with different, "
+            "plausible data."
+        ),
+    )
 
     _check_figure_kinds = field_validator("figure_kinds")(_validate_figure_kinds)
 
@@ -272,6 +282,16 @@ class DocumentExcelRequest(BaseModel):
             "gen_tracing field."
         ),
     )
+    count: int = Field(
+        default=1,
+        ge=1,
+        le=10,
+        description=(
+            "Number of workbooks to generate (1-10, default 1). Workbooks "
+            "2+ keep the same structure as the first but with different, "
+            "plausible data."
+        ),
+    )
 
     _check_figure_kinds = field_validator("figure_kinds")(_validate_figure_kinds)
 
@@ -313,6 +333,16 @@ class DocumentImageRequest(BaseModel):
             "When true, persist the per-stage generation trace (prompts, "
             "outputs, timings) on the document record under the "
             "gen_tracing field."
+        ),
+    )
+    count: int = Field(
+        default=1,
+        ge=1,
+        le=10,
+        description=(
+            "Number of images to generate (1-10, default 1). Images 2+ "
+            "keep the same structure as the first but with different, "
+            "plausible data."
         ),
     )
 
@@ -975,41 +1005,83 @@ def generate_company_document_types(
 # ---------------------------------------------------------------------------
 
 
+def _document_series_result(count: int, documents: list[dict]) -> dict:
+    """Build the result payload for a document-series job.
+
+    The payload always carries the ``documents`` list (one entry per
+    generated file). When ``count == 1`` the legacy single-document
+    fields (e.g. ``pdf``/``report``) are also set at the top level, so
+    existing count=1 callers see the same result shape.
+    """
+    if count == 1:
+        entry = documents[0]
+        return {**entry, "documents": [entry]}
+    return {"documents": documents}
+
+
 def _run_pdf_job(job: _Job, company_id: int, request: DocumentPdfRequest) -> None:
-    """Worker thread: generate one PDF document, publish progress."""
+    """Worker thread: generate a series of PDF documents, publish progress.
+
+    Iteration 1 runs exactly as a standalone document; iterations 2+ reuse
+    the previous document's markdown and plan so the series shares one
+    structure with different data. A mid-batch failure keeps the documents
+    generated so far in ``job.result`` (partial downloads).
+    """
     with _capture_job_logs(job):
         logger.info(
-            "PDF job %s: starting (company %s, report=%r, model=%r)",
+            "PDF job %s: starting (company %s, report=%r, model=%r, count=%d)",
             job.id,
             company_id,
             request.report,
             request.model,
+            request.count,
         )
         t0 = time.perf_counter()
+        documents: list[dict] = []
         try:
-            artifact = document_pdf.generate_document_pdf(
-                company_id,
-                request.report,
-                user_input=request.user_input,
-                model_name=request.model,
-                figure_kinds=request.figure_kinds,
-                quick_doc=request.quick_doc,
-                gen_tracing=request.gen_tracing,
-            )
-            logger.info(
-                "PDF job %s: done in %.3fs -> %s",
-                job.id,
-                time.perf_counter() - t0,
-                artifact.pdf_path,
-            )
-            job.result = {"pdf": artifact.pdf_path.name, "report": artifact.report_name}
-            job.completed += 1
+            previous = None
+            for index in range(1, request.count + 1):
+                variation_kwargs: dict[str, Any] = {}
+                if previous is not None:
+                    variation_kwargs = {
+                        "variation_index": index,
+                        "variation_total": request.count,
+                        "reference_markdown": previous.markdown,
+                        "reuse_plan": previous.plan,
+                    }
+                artifact = document_pdf.generate_document_pdf(
+                    company_id,
+                    request.report,
+                    user_input=request.user_input,
+                    model_name=request.model,
+                    figure_kinds=request.figure_kinds,
+                    quick_doc=request.quick_doc,
+                    gen_tracing=request.gen_tracing,
+                    **variation_kwargs,
+                )
+                documents.append(
+                    {"pdf": artifact.pdf_path.name, "report": artifact.report_name}
+                )
+                logger.info(
+                    "PDF job %s: document %d/%d done in %.3fs -> %s",
+                    job.id,
+                    index,
+                    request.count,
+                    time.perf_counter() - t0,
+                    artifact.pdf_path,
+                )
+                previous = artifact
+                job.completed += 1
+                job._publish()
+            job.result = _document_series_result(request.count, documents)
             job.company_ids = [company_id]
             job.status = "done"
         except Exception as exc:  # surface any pipeline error to the client
             logger.exception(
                 "PDF job %s: failed after %.3fs", job.id, time.perf_counter() - t0
             )
+            if documents:
+                job.result = _document_series_result(request.count, documents)
             job.status = "error"
             job.error = str(exc)
         finally:
@@ -1033,7 +1105,7 @@ def generate_company_pdf(company_id: int, request: DocumentPdfRequest) -> dict:
                 "Settings tab or set the DOCUMENTS_DIR environment variable."
             ),
         )
-    job = _Job(id=uuid.uuid4().hex[:12], total=1)
+    job = _Job(id=uuid.uuid4().hex[:12], total=request.count)
     _JOBS[job.id] = job
     _prune_jobs()
     threading.Thread(
@@ -1070,45 +1142,70 @@ XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.s
 
 
 def _run_excel_job(job: _Job, company_id: int, request: DocumentExcelRequest) -> None:
-    """Worker thread: generate one Excel workbook, publish progress."""
+    """Worker thread: generate a series of Excel workbooks, publish progress.
+
+    Iteration 1 runs exactly as a standalone workbook; iterations 2+ reuse
+    the previous workbook's markdown and plan so the series shares one
+    structure with different data. A mid-batch failure keeps the workbooks
+    generated so far in ``job.result`` (partial downloads).
+    """
     with _capture_job_logs(job):
         logger.info(
-            "Excel job %s: starting (company %s, report=%r, model=%r)",
+            "Excel job %s: starting (company %s, report=%r, model=%r, count=%d)",
             job.id,
             company_id,
             request.report,
             request.model,
+            request.count,
         )
         t0 = time.perf_counter()
+        documents: list[dict] = []
         try:
-            artifact = document_excel.generate_document_excel(
-                company_id,
-                request.report,
-                user_input=request.user_input,
-                model_name=request.model,
-                figure_kinds=request.figure_kinds,
-                quick_doc=request.quick_doc,
-                simple_sheets=request.simple_sheets,
-                glossary=request.glossary,
-                gen_tracing=request.gen_tracing,
-            )
-            logger.info(
-                "Excel job %s: done in %.3fs -> %s",
-                job.id,
-                time.perf_counter() - t0,
-                artifact.xlsx_path,
-            )
-            job.result = {
-                "xlsx": artifact.xlsx_path.name,
-                "report": artifact.report_name,
-            }
-            job.completed += 1
+            previous = None
+            for index in range(1, request.count + 1):
+                variation_kwargs: dict[str, Any] = {}
+                if previous is not None:
+                    variation_kwargs = {
+                        "variation_index": index,
+                        "variation_total": request.count,
+                        "reference_markdown": previous.markdown,
+                        "reuse_plan": previous.plan,
+                    }
+                artifact = document_excel.generate_document_excel(
+                    company_id,
+                    request.report,
+                    user_input=request.user_input,
+                    model_name=request.model,
+                    figure_kinds=request.figure_kinds,
+                    quick_doc=request.quick_doc,
+                    simple_sheets=request.simple_sheets,
+                    glossary=request.glossary,
+                    gen_tracing=request.gen_tracing,
+                    **variation_kwargs,
+                )
+                documents.append(
+                    {"xlsx": artifact.xlsx_path.name, "report": artifact.report_name}
+                )
+                logger.info(
+                    "Excel job %s: workbook %d/%d done in %.3fs -> %s",
+                    job.id,
+                    index,
+                    request.count,
+                    time.perf_counter() - t0,
+                    artifact.xlsx_path,
+                )
+                previous = artifact
+                job.completed += 1
+                job._publish()
+            job.result = _document_series_result(request.count, documents)
             job.company_ids = [company_id]
             job.status = "done"
         except Exception as exc:  # surface any pipeline error to the client
             logger.exception(
                 "Excel job %s: failed after %.3fs", job.id, time.perf_counter() - t0
             )
+            if documents:
+                job.result = _document_series_result(request.count, documents)
             job.status = "error"
             job.error = str(exc)
         finally:
@@ -1132,7 +1229,7 @@ def generate_company_excel(company_id: int, request: DocumentExcelRequest) -> di
                 "Settings tab or set the DOCUMENTS_DIR environment variable."
             ),
         )
-    job = _Job(id=uuid.uuid4().hex[:12], total=1)
+    job = _Job(id=uuid.uuid4().hex[:12], total=request.count)
     _JOBS[job.id] = job
     _prune_jobs()
     threading.Thread(
@@ -1167,44 +1264,69 @@ def download_company_excel(company_id: int, filename: str) -> FileResponse:
 
 
 def _run_image_job(job: _Job, company_id: int, request: DocumentImageRequest) -> None:
-    """Worker thread: generate one PNG image document, publish progress."""
+    """Worker thread: generate a series of PNG image documents, publish progress.
+
+    Iteration 1 runs exactly as a standalone image; iterations 2+ reuse the
+    previous image's markdown and plan so the series shares one structure
+    with different data. A mid-batch failure keeps the images generated so
+    far in ``job.result`` (partial downloads).
+    """
     with _capture_job_logs(job):
         logger.info(
-            "Image job %s: starting (company %s, report=%r, model=%r)",
+            "Image job %s: starting (company %s, report=%r, model=%r, count=%d)",
             job.id,
             company_id,
             request.report,
             request.model,
+            request.count,
         )
         t0 = time.perf_counter()
+        documents: list[dict] = []
         try:
-            artifact = document_png.generate_document_image(
-                company_id,
-                request.report,
-                user_input=request.user_input,
-                model_name=request.model,
-                figure_kinds=request.figure_kinds,
-                a4_aspect=request.a4_aspect,
-                distress=request.distress,
-                gen_tracing=request.gen_tracing,
-            )
-            logger.info(
-                "Image job %s: done in %.3fs -> %s",
-                job.id,
-                time.perf_counter() - t0,
-                artifact.png_path,
-            )
-            job.result = {
-                "png": artifact.png_path.name,
-                "report": artifact.report_name,
-            }
-            job.completed += 1
+            previous = None
+            for index in range(1, request.count + 1):
+                variation_kwargs: dict[str, Any] = {}
+                if previous is not None:
+                    variation_kwargs = {
+                        "variation_index": index,
+                        "variation_total": request.count,
+                        "reference_markdown": previous.markdown,
+                        "reuse_plan": previous.plan,
+                    }
+                artifact = document_png.generate_document_image(
+                    company_id,
+                    request.report,
+                    user_input=request.user_input,
+                    model_name=request.model,
+                    figure_kinds=request.figure_kinds,
+                    a4_aspect=request.a4_aspect,
+                    distress=request.distress,
+                    gen_tracing=request.gen_tracing,
+                    **variation_kwargs,
+                )
+                documents.append(
+                    {"png": artifact.png_path.name, "report": artifact.report_name}
+                )
+                logger.info(
+                    "Image job %s: image %d/%d done in %.3fs -> %s",
+                    job.id,
+                    index,
+                    request.count,
+                    time.perf_counter() - t0,
+                    artifact.png_path,
+                )
+                previous = artifact
+                job.completed += 1
+                job._publish()
+            job.result = _document_series_result(request.count, documents)
             job.company_ids = [company_id]
             job.status = "done"
         except Exception as exc:  # surface any pipeline error to the client
             logger.exception(
                 "Image job %s: failed after %.3fs", job.id, time.perf_counter() - t0
             )
+            if documents:
+                job.result = _document_series_result(request.count, documents)
             job.status = "error"
             job.error = str(exc)
         finally:
@@ -1228,7 +1350,7 @@ def generate_company_image(company_id: int, request: DocumentImageRequest) -> di
                 "Settings tab or set the DOCUMENTS_DIR environment variable."
             ),
         )
-    job = _Job(id=uuid.uuid4().hex[:12], total=1)
+    job = _Job(id=uuid.uuid4().hex[:12], total=request.count)
     _JOBS[job.id] = job
     _prune_jobs()
     threading.Thread(
