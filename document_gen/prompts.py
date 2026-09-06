@@ -105,6 +105,9 @@ Additional user instructions
 Series variation
 <variation>
 
+Cover page
+<cover_page>
+
 Task
 Draft the full content of the requested document for this company, in
 **markdown**.
@@ -154,6 +157,7 @@ Document to plan
 
 Generation options
 - Quick doc (short, fast document): <quick_doc>
+- Cover page: <cover_page>
 - Figures to include: <figures>
 - Additional user instructions: <user_input>
 - Series scope: <series>
@@ -282,6 +286,7 @@ Document to plan
 <document_type>
 
 Figures to include: <figures>
+Cover page: <cover_page>
 Additional user instructions: <user_input>
 Series scope: <series>
 
@@ -309,6 +314,9 @@ Additional user instructions
 
 Series variation
 <variation>
+
+Cover page
+<cover_page>
 
 Task
 Write a short markdown document (1-3 sections, roughly one page):
@@ -374,6 +382,12 @@ Design brief (use only its first color as an accent)
 Document content (markdown)
 <markdown>
 
+Additional user instructions
+<user_input>
+
+Cover page
+<cover_page>
+
 Figures to include
 <figures>
 
@@ -404,6 +418,7 @@ Workbook to plan
 Generation options
 - Simple sheets mode (no cover sheet, at most 4 sheets, 1-2 simple
   tables per sheet, no figures): <simple_sheets>
+- Cover sheet: <cover_sheet>
 - Glossary sheet (a single lookup sheet defining abbreviated terms):
   <glossary>
 - Figures to include: <figures>
@@ -416,9 +431,9 @@ Produce a workbook-level design plan:
 1. **Sheet names**: the ordered list of worksheet names for the workbook.
    - Simple sheets mode: at most 4 sheets, each holding 1-2 simple data
      tables.
-   - Otherwise: a "Cover" sheet, a "Glossary" sheet when the glossary
-     option is on, then one or more data sheets named after the
-     workbook's main topics.
+   - Otherwise: a "Cover" sheet when the cover-sheet option is on, a
+     "Glossary" sheet when the glossary option is on, then one or more
+     data sheets named after the workbook's main topics.
    Names become worksheet tab names: keep them short (31 characters max)
    and free of the characters []:*?/\\.
 2. **Design direction**: 1-2 sentences describing the workbook's visual
@@ -488,11 +503,15 @@ You are an Excel workbook designer. Convert the markdown draft below into
 a complete **ExcelDoc** JSON document that a renderer will turn into an
 .xlsx file.
 
-Company (for the cover sheet and workbook properties)
+Company (for the workbook properties, and the cover sheet when the Mode
+section says to include one)
 <company_profile>
 
 Workbook
 <document_type>
+
+Additional user instructions
+<user_input>
 
 Design plan
 <design_brief>
@@ -522,7 +541,9 @@ Sheets
 - Default mode: start with a **Cover** sheet (workbook title, company
   info, and a short description / table of contents as standalone `cells`
   with real `value`s; use `merge_range` + `wrap_text` for paragraph
-  blocks). Then the data sheets.
+  blocks) **only when the Mode section says to**; when the Mode section
+  says "no cover sheet", begin directly with the data sheets. Then the
+  data sheets.
 - Glossary sheet: include it only when the mode instructions say to.
   It is a single lookup sheet (never repeated per sheet) defining the
   abbreviated terms used in the workbook — one row per term as a
@@ -569,6 +590,12 @@ Design brief
 
 Document content (markdown)
 <markdown>
+
+Additional user instructions
+<user_input>
+
+Cover page
+<cover_page>
 
 Figures to include
 <figures>

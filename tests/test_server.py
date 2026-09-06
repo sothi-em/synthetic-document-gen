@@ -863,6 +863,7 @@ class TestCompanyPdf:
             output_dir=None,
             figure_kinds=None,
             quick_doc=False,
+            cover_page=True,
             gen_tracing=False,
         ):
             calls.update(
@@ -872,6 +873,7 @@ class TestCompanyPdf:
                 model_name=model_name,
                 figure_kinds=figure_kinds,
                 quick_doc=quick_doc,
+                cover_page=cover_page,
                 gen_tracing=gen_tracing,
             )
             return SimpleNamespace(
@@ -910,6 +912,7 @@ class TestCompanyPdf:
             "model_name": "m1",
             "figure_kinds": [],
             "quick_doc": False,
+            "cover_page": True,
             "gen_tracing": False,
         }
 
@@ -940,6 +943,7 @@ class TestCompanyPdf:
                 "model": "m1",
                 "figure_kinds": ["bar", "line"],
                 "quick_doc": True,
+                "cover_page": False,
                 "gen_tracing": True,
             },
         )
@@ -950,6 +954,7 @@ class TestCompanyPdf:
             "model_name": "m1",
             "figure_kinds": ["bar", "line"],
             "quick_doc": True,
+            "cover_page": False,
             "gen_tracing": True,
         }
 
@@ -1136,6 +1141,7 @@ class TestCompanyExcel:
             figure_kinds=None,
             quick_doc=False,
             simple_sheets=False,
+            cover_sheet=True,
             glossary=False,
             gen_tracing=False,
         ):
@@ -1147,6 +1153,7 @@ class TestCompanyExcel:
                 figure_kinds=figure_kinds,
                 quick_doc=quick_doc,
                 simple_sheets=simple_sheets,
+                cover_sheet=cover_sheet,
                 glossary=glossary,
                 gen_tracing=gen_tracing,
             )
@@ -1189,6 +1196,7 @@ class TestCompanyExcel:
             "figure_kinds": [],
             "quick_doc": False,
             "simple_sheets": False,
+            "cover_sheet": True,
             "glossary": False,
             "gen_tracing": False,
         }
@@ -1235,9 +1243,36 @@ class TestCompanyExcel:
             "figure_kinds": ["bar", "line"],
             "quick_doc": True,
             "simple_sheets": True,
+            "cover_sheet": True,
             "glossary": True,
             "gen_tracing": True,
         }
+
+    def test_cover_sheet_off_is_forwarded(
+        self, client, company_db, monkeypatch, tmp_path
+    ) -> None:
+        from types import SimpleNamespace
+
+        out = tmp_path / "reports"
+        monkeypatch.setenv("DOCUMENTS_DIR", str(out))
+        calls: dict = {}
+
+        def fake_generate(company_id, report, **kwargs):
+            calls.update(kwargs)
+            return SimpleNamespace(
+                xlsx_path=out / "acme_report.xlsx", report_name="Onboarding Guide"
+            )
+
+        monkeypatch.setattr(
+            server.document_excel, "generate_document_excel", fake_generate
+        )
+        response = client.post(
+            f"/api/companies/{company_db[0]}/excel",
+            json={"report": "Onboarding Guide", "cover_sheet": False},
+        )
+        assert response.status_code == 202
+        _poll_job(client, response.json()["id"])
+        assert calls["cover_sheet"] is False
 
     def test_job_error(self, client, company_db, monkeypatch, tmp_path) -> None:
         monkeypatch.setenv("DOCUMENTS_DIR", str(tmp_path))

@@ -217,6 +217,13 @@ class DocumentPdfRequest(BaseModel):
             "document."
         ),
     )
+    cover_page: bool = Field(
+        default=True,
+        description=(
+            "When false, do not give the document a standalone cover page; "
+            "the title block stays on the first page with the content."
+        ),
+    )
     gen_tracing: bool = Field(
         default=False,
         description=(
@@ -270,6 +277,14 @@ class DocumentExcelRequest(BaseModel):
             "When true, skip the cover sheet, force the figure kinds to "
             "empty, and keep the workbook to at most 4 sheets with 1-2 "
             "simple tables each."
+        ),
+    )
+    cover_sheet: bool = Field(
+        default=True,
+        description=(
+            "When false, omit the Cover sheet (data sheets only). "
+            "Ignored when simple_sheets is true (simple sheets never "
+            "include a cover)."
         ),
     )
     glossary: bool = Field(
@@ -1095,6 +1110,7 @@ def _run_pdf_job(job: _Job, company_id: int, request: DocumentPdfRequest) -> Non
                     model_name=request.model,
                     figure_kinds=request.figure_kinds,
                     quick_doc=request.quick_doc,
+                    cover_page=request.cover_page,
                     gen_tracing=request.gen_tracing,
                     **variation_kwargs,
                 )
@@ -1218,6 +1234,7 @@ def _run_excel_job(job: _Job, company_id: int, request: DocumentExcelRequest) ->
                     figure_kinds=request.figure_kinds,
                     quick_doc=request.quick_doc,
                     simple_sheets=request.simple_sheets,
+                    cover_sheet=request.cover_sheet,
                     glossary=request.glossary,
                     gen_tracing=request.gen_tracing,
                     **variation_kwargs,

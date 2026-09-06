@@ -117,6 +117,8 @@ export interface DocumentPdfRequest {
   model: string | null
   figure_kinds?: FigureKind[]
   quick_doc?: boolean
+  /** When false, no standalone cover page (title block stays on page 1). */
+  cover_page?: boolean
   /** Persist the per-stage generation trace on the document record. */
   gen_tracing?: boolean
   /** Number of documents to generate (1-10, default 1). */
@@ -139,6 +141,8 @@ export interface DocumentExcelRequest {
   quick_doc?: boolean
   /** Skip the cover sheet and embedded figures. */
   simple_sheets?: boolean
+  /** When false, omit the Cover sheet (ignored for simple sheets). */
+  cover_sheet?: boolean
   /** Add a single Glossary lookup sheet for abbreviated terms. */
   glossary?: boolean
   /** Persist the per-stage generation trace on the document record. */

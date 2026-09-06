@@ -445,6 +445,7 @@ def _plan_document(
     report_type: DocumentType,
     kinds: list[str],
     quick_doc: bool,
+    cover_page: bool,
     user_input: str | None,
     seed: int,
     model_name: str | None,
@@ -462,6 +463,8 @@ def _plan_document(
         report_type: The report type being generated.
         kinds: The requested figure kinds (may be empty).
         quick_doc: Whether the quick-doc option is on.
+        cover_page: Whether the document should have a standalone cover
+            page.
         user_input: Optional free-text user guidance.
         seed: Random seed for deterministic runs.
         model_name: Optional model ID override.
@@ -491,6 +494,7 @@ def _plan_document(
                 "<company_profile>", profile.format_prompt()
             )
             .replace("<document_type>", report_type_text)
+            .replace("<cover_page>", _cover_page_instruction(cover_page))
             .replace("<figures>", ", ".join(kinds) if kinds else "none")
             .replace(
                 "<user_input>",
@@ -506,6 +510,7 @@ def _plan_document(
             document_plan_prompt.replace("<company_profile>", profile.format_prompt())
             .replace("<document_type>", report_type_text)
             .replace("<quick_doc>", "yes" if quick_doc else "no")
+            .replace("<cover_page>", _cover_page_instruction(cover_page))
             .replace("<figures>", ", ".join(kinds) if kinds else "none")
             .replace(
                 "<user_input>",
@@ -625,6 +630,33 @@ def variation_instruction(
     )
 
 
+def _cover_page_instruction(cover_page: bool) -> str:
+    """Build the ``<cover_page>`` instruction for the PDF prompts.
+
+    Injected into every stage that can create or shape a cover page
+    (plan, content, and HTML task prompts), so the cover on/off decision
+    is consistent across the pipeline and does not rely on free-text
+    description parsing.
+
+    Args:
+        cover_page: Whether the document should have a standalone cover
+            page.
+
+    Returns:
+        The instruction text for the ``<cover_page>`` prompt slot.
+    """
+    if cover_page:
+        return (
+            "Include a standalone cover page (title, company info) as the "
+            "first page before the content."
+        )
+    return (
+        "No standalone cover page: keep the document title block (title, "
+        "date, letterhead) at the top of the first page together with the "
+        "content; do not insert a page break after the title block."
+    )
+
+
 def _toc_instruction(include_toc: bool) -> str:
     """Build the ``<toc>`` instruction for the stage-1 markdown prompt.
 
@@ -732,6 +764,7 @@ def generate_document_pdf(
     output_dir: Path | None = None,
     figure_kinds: list[str] | None = None,
     quick_doc: bool = False,
+    cover_page: bool = True,
     gen_tracing: bool = False,
     variation_index: int = 1,
     variation_total: int = 1,
@@ -768,6 +801,11 @@ def generate_document_pdf(
             one figure instead of 1-2, and
             disable model thinking/reasoning on every LLM call, producing
             a shorter, faster report.
+        cover_page: When ``False``, do not give the document a standalone
+            cover page; the title block stays on the first page with the
+            content. The instruction reaches the plan, content, and HTML
+            task prompts (prompt-driven; rendered page layout cannot be
+            backstopped deterministically).
         gen_tracing: When ``True``, the aggregated per-stage trace
             (prompts, outputs, timings) is persisted on the
             document record under the ``gen_tracing`` field.
@@ -840,6 +878,7 @@ def generate_document_pdf(
         "report": report_type.name,
         "user_input": user_input,
         "quick_doc": quick_doc,
+        "cover_page": cover_page,
         "variation_index": variation_index,
         "variation_total": variation_total,
         "stages": {},
@@ -873,6 +912,7 @@ def generate_document_pdf(
             report_type,
             kinds,
             quick_doc,
+            cover_page,
             user_input,
             seed,
             model_name,
@@ -908,6 +948,7 @@ def generate_document_pdf(
             "<variation>",
             variation_instruction(variation_index, variation_total, reference_markdown),
         )
+        .replace("<cover_page>", _cover_page_instruction(cover_page))
         .replace("<figures>", _content_figures_instruction(kinds, quick=quick_doc))
     )
     if not quick_doc:
@@ -1015,6 +1056,11 @@ def generate_document_pdf(
         html_template.replace("<company_profile>", profile.format_prompt())
         .replace("<design_brief>", _design_brief_text(plan))
         .replace("<markdown>", markdown)
+        .replace(
+            "<user_input>",
+            user_input.strip() if user_input and user_input.strip() else "None.",
+        )
+        .replace("<cover_page>", _cover_page_instruction(cover_page))
         .replace("<figures>", _html_figures_instruction(figure_specs))
     )
     t_step = time.perf_counter()

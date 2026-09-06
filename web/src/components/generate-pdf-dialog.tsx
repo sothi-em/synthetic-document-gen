@@ -70,6 +70,7 @@ export function GeneratePdfDialog({
   const [model, setModel] = useState("")
   const [count, setCount] = useState("1")
   const [quickDoc, setQuickDoc] = useState(false)
+  const [coverPage, setCoverPage] = useState(true)
   const [genTrace, setGenTrace] = useState(false)
   const [figureKinds, setFigureKinds] = useState<Record<FigureKind, boolean>>(
     () => Object.fromEntries(
@@ -86,6 +87,7 @@ export function GeneratePdfDialog({
       setModel("")
       setCount("1")
       setQuickDoc(false)
+      setCoverPage(true)
       setGenTrace(false)
       setFigureKinds(
         Object.fromEntries(
@@ -121,6 +123,7 @@ export function GeneratePdfDialog({
         figure_kinds: FIGURE_KIND_OPTIONS.filter(({ kind }) => figureKinds[kind])
           .map(({ kind }) => kind),
         quick_doc: quickDoc,
+        cover_page: coverPage,
         gen_tracing: genTrace,
         count: countValue,
       })
@@ -205,6 +208,26 @@ export function GeneratePdfDialog({
                   Cuts the max output tokens for both the markdown draft and
                   the HTML+CSS stage by 80% (keeps 20%), producing a
                   shorter, faster document.
+                </span>
+              </span>
+            </span>
+          </label>
+          <label
+            className="flex items-center gap-2 text-sm text-muted-foreground"
+          >
+            <input
+              type="checkbox"
+              checked={coverPage}
+              disabled={state.running}
+              onChange={(e) => setCoverPage(e.target.checked)}
+            />
+            <span className="flex items-center gap-1">
+              Cover Page
+              <span className="group relative inline-flex">
+                <HelpCircle className="size-3.5 cursor-help text-muted-foreground" />
+                <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 hidden w-64 -translate-x-1/2 rounded-md border bg-popover p-2 text-xs font-normal leading-snug text-popover-foreground shadow-md group-hover:block">
+                  Starts the document with a standalone cover page. Turn off
+                  to keep the title block on the first page with the content.
                 </span>
               </span>
             </span>

@@ -495,6 +495,9 @@ def generate_document_image(
             report_type,
             kinds,
             quick_doc=False,
+            # Image documents are single-page by construction: they never
+            # carry a standalone cover page.
+            cover_page=False,
             user_input=user_input,
             seed=seed,
             model_name=model_name,

@@ -323,6 +323,10 @@ class TestGenerateDocumentExcel:
         assert all(call["seed"] == 42 for call in backend.calls)
         assert all(call["thinking"] is True for call in backend.calls)
         assert all(call["thinking"] is True for call in backend.query_calls)
+        # Free-text user instructions also reach the styling stage (the
+        # sheet-emitting LLM call), not just the plan + content stages.
+        assert "focus on Q3" in backend.query_calls[1]["prompt"]
+
         # The markdown draft is capped.
         assert (
             backend.calls[0]["max_tokens"] == document_excel.MARKDOWN_MAX_TOKENS == 8192
@@ -428,6 +432,25 @@ class TestGenerateDocumentExcel:
         assert artifact.plan is document_excel._DEFAULT_EXCEL_PLAN
         assert artifact.gen_tracing["stages"]["plan"]["used_default_fallback"] is True
 
+    def test_variation_fallback_plan_is_no_cover_when_cover_off(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = FakeBackend()
+        artifact = _run(
+            tmp_path,
+            monkeypatch,
+            backend,
+            variation_index=2,
+            variation_total=2,
+            reference_markdown="# Ref",
+            cover_sheet=False,
+        )
+        # The no-cover fallback plan is used and its brief (no Cover sheet
+        # name) reaches the styling prompt.
+        assert artifact.plan is document_excel._DEFAULT_EXCEL_PLAN_NO_COVER
+        assert "Planned sheet names: Data" in backend.query_calls[0]["prompt"]
+        assert "Planned sheet names: Cover" not in backend.query_calls[0]["prompt"]
+
     def test_trace_rerender_reproduces_workbook(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -524,6 +547,28 @@ class TestGenerateDocumentExcel:
         assert "Professional, neutral workbook styling." in (
             backend.query_calls[0]["prompt"]
         )
+        # The run still completes.
+        assert artifact.xlsx_path.exists()
+
+    def test_plan_failure_no_cover_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = FakeBackend()
+        original_query = backend.query
+
+        def failing_query(prompt: str, model: Any, **kwargs: Any) -> Any:
+            if model is ExcelPlan:
+                raise RuntimeError("LLM down")
+            return original_query(prompt, model, **kwargs)
+
+        backend.query = failing_query  # type: ignore[method-assign]
+        artifact = _run(tmp_path, monkeypatch, backend, cover_sheet=False)
+
+        # The fallback plan matches the cover option: no Cover sheet name,
+        # and the styling prompt's brief agrees.
+        assert artifact.plan is document_excel._DEFAULT_EXCEL_PLAN_NO_COVER
+        assert "Planned sheet names: Data" in backend.query_calls[0]["prompt"]
+        assert "Planned sheet names: Cover" not in backend.query_calls[0]["prompt"]
         # The run still completes.
         assert artifact.xlsx_path.exists()
 
@@ -673,6 +718,144 @@ class TestModeText:
         text = document_excel._mode_text(simple_sheets=True, glossary=False)
         assert "Simple sheets mode" in text
         assert "No glossary sheet" in text
+
+    def test_default_cover_on(self) -> None:
+        text = document_excel._mode_text(simple_sheets=False, glossary=False)
+        # The default (cover_sheet=True) keeps the original mandate.
+        assert "Default mode: start with a Cover sheet" in text
+        assert "no cover sheet" not in text
+
+    def test_default_cover_off(self) -> None:
+        text = document_excel._mode_text(
+            simple_sheets=False, glossary=False, cover_sheet=False
+        )
+        assert "Default mode, no cover sheet" in text
+        assert "data sheets only" in text
+        assert "start with a Cover sheet" not in text
+
+    def test_simple_sheets_ignores_cover_flag(self) -> None:
+        text = document_excel._mode_text(
+            simple_sheets=True, glossary=False, cover_sheet=True
+        )
+        assert "Simple sheets mode" in text
+        assert "start with a Cover sheet" not in text
+
+
+class TestDropCoverSheet:
+    """The deterministic backstop that drops a stray Cover sheet."""
+
+    def _doc_with_cover(self) -> ExcelDoc:
+        return ExcelDoc.model_validate(
+            {
+                "doc_schema": {
+                    "seed_prompt": "workbook",
+                    "sheets": ["Cover", "Sales"],
+                },
+                "title": "Q3 Workbook",
+                "created": "2024-01-15T10:00:00",
+                "sheets": [
+                    {"name": "Cover", "tables": []},
+                    {"name": "Sales", "tables": []},
+                ],
+            }
+        )
+
+    def test_removes_cover_from_sheets_and_schema(self) -> None:
+        doc = self._doc_with_cover()
+        assert document_excel._drop_cover_sheet(doc) is True
+        assert [sheet.name for sheet in doc.sheets] == ["Sales"]
+        assert doc.doc_schema.sheets == ["Sales"]
+
+    def test_case_insensitive_name(self) -> None:
+        doc = self._doc_with_cover()
+        doc.sheets[0].name = "cover"
+        doc.doc_schema.sheets[0] = "COVER"
+        assert document_excel._drop_cover_sheet(doc) is True
+        assert [sheet.name for sheet in doc.sheets] == ["Sales"]
+        assert doc.doc_schema.sheets == ["Sales"]
+
+    def test_no_cover_sheet_is_a_noop(self) -> None:
+        doc = self._doc_with_cover()
+        doc.sheets.pop(0)
+        doc.doc_schema.sheets = ["Sales"]
+        assert document_excel._drop_cover_sheet(doc) is False
+        assert [sheet.name for sheet in doc.sheets] == ["Sales"]
+
+
+class TestCoverSheetOption:
+    """The cover-sheet checkbox flows through prompts and the backstop."""
+
+    def test_cover_on_default_reaches_prompts_and_trace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = FakeBackend()
+        artifact = _run(tmp_path, monkeypatch, backend)
+        # Plan prompt carries the option; content + styling prompts carry
+        # the cover-on mode text.
+        assert "- Cover sheet: yes" in backend.query_calls[0]["prompt"]
+        assert "Default mode: start with a Cover sheet" in backend.calls[0]["prompt"]
+        assert (
+            "Default mode: start with a Cover sheet" in backend.query_calls[1]["prompt"]
+        )
+        assert artifact.gen_tracing["cover_sheet"] is True
+
+    def test_cover_off_reaches_prompts_and_trace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = FakeBackend()
+        artifact = _run(tmp_path, monkeypatch, backend, cover_sheet=False)
+        # Plan prompt carries the option…
+        assert "- Cover sheet: no" in backend.query_calls[0]["prompt"]
+        # …and content + styling prompts carry the no-cover mode text.
+        assert "Default mode, no cover sheet" in backend.calls[0]["prompt"]
+        assert "Default mode, no cover sheet" in backend.query_calls[1]["prompt"]
+        assert artifact.gen_tracing["cover_sheet"] is False
+
+    def test_cover_off_backstop_drops_llm_cover_sheet(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        backend = FakeBackend()
+        # The LLM ignores the mode text and emits a Cover sheet anyway.
+        backend.EXCEL_DOC = {
+            **FakeBackend.EXCEL_DOC,
+            "doc_schema": {
+                **FakeBackend.EXCEL_DOC["doc_schema"],
+                "sheets": ["Cover", "Sales"],
+            },
+            "sheets": [
+                {"name": "Cover", "tables": []},
+                FakeBackend.EXCEL_DOC["sheets"][0],
+            ],
+        }
+        with caplog.at_level("WARNING", logger="document_gen.document_excel"):
+            artifact = _run(tmp_path, monkeypatch, backend, cover_sheet=False)
+
+        # The Cover sheet is dropped deterministically before render.
+        assert [sheet.name for sheet in artifact.excel_doc.sheets] == ["Sales"]
+        assert artifact.excel_doc.doc_schema.sheets == ["Sales"]
+        assert any("dropped it deterministically" in r.message for r in caplog.records)
+        # The rendered workbook has no Cover tab.
+        wb = openpyxl.load_workbook(artifact.xlsx_path)
+        assert "Cover" not in wb.sheetnames
+
+    def test_cover_off_simple_sheets_keeps_effective_cover_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        backend = FakeBackend()
+        artifact = _run(
+            tmp_path,
+            monkeypatch,
+            backend,
+            simple_sheets=True,
+            cover_sheet=True,
+        )
+        # Simple sheets implies no cover: the mode text is the simple one
+        # regardless of the cover flag.
+        assert "Simple sheets mode" in backend.calls[0]["prompt"]
+        assert artifact.gen_tracing["cover_sheet"] is True
 
 
 class TestGlossaryOption:

@@ -104,7 +104,7 @@ class ExcelArtifact:
 
 
 #: Fallback plan used when the workbook-plan LLM call fails: a neutral
-#: design brief with the default-mode sheet layout.
+#: design brief with the default-mode sheet layout (cover sheet on).
 _DEFAULT_EXCEL_PLAN = ExcelPlan(
     design_direction="Professional, neutral workbook styling.",
     palette=["#1F3A5F", "#333333", "#FFFFFF"],
@@ -112,6 +112,24 @@ _DEFAULT_EXCEL_PLAN = ExcelPlan(
     table_density="standard",
     notes="Neutral styling; standard table density.",
 )
+
+#: No-cover variant of the fallback plan (cover-sheet option off).
+_DEFAULT_EXCEL_PLAN_NO_COVER = _DEFAULT_EXCEL_PLAN.model_copy(
+    update={"sheet_names": ["Data"]}
+)
+
+
+def _default_excel_plan(cover_sheet: bool) -> ExcelPlan:
+    """Pick the fallback plan matching the effective cover-sheet option.
+
+    Args:
+        cover_sheet: Whether the (effective) cover sheet is on.
+
+    Returns:
+        :data:`_DEFAULT_EXCEL_PLAN` when the cover sheet is on, the
+        no-cover variant otherwise.
+    """
+    return _DEFAULT_EXCEL_PLAN if cover_sheet else _DEFAULT_EXCEL_PLAN_NO_COVER
 
 
 # ---------------------------------------------------------------------------
@@ -137,12 +155,14 @@ def _design_brief_text(plan: ExcelPlan) -> str:
     )
 
 
-def _mode_text(simple_sheets: bool, glossary: bool) -> str:
+def _mode_text(simple_sheets: bool, glossary: bool, cover_sheet: bool = True) -> str:
     """Build the ``<mode>`` instruction for the Excel prompts.
 
     Args:
         simple_sheets: Whether simple-sheets mode is on.
         glossary: Whether the glossary lookup sheet is requested.
+        cover_sheet: Whether the Cover sheet is requested (ignored in
+            simple-sheets mode, which never has a cover sheet).
 
     Returns:
         The instruction text for the ``<mode>`` prompt slot.
@@ -153,10 +173,17 @@ def _mode_text(simple_sheets: bool, glossary: bool) -> str:
             "most 4 sheets; 1-2 simple tables per sheet with single-row "
             "column headers; no figures and no loose annotation blocks."
         )
-    else:
+    elif cover_sheet:
         base = (
             "Default mode: start with a Cover sheet, then the data "
             "sheets; multi-row headers, header fills, borders, number "
+            "formats, loose annotation blocks, and figure placements are "
+            "allowed."
+        )
+    else:
+        base = (
+            "Default mode, no cover sheet: data sheets only — no Cover "
+            "sheet; multi-row headers, header fills, borders, number "
             "formats, loose annotation blocks, and figure placements are "
             "allowed."
         )
@@ -178,6 +205,41 @@ def _mode_text(simple_sheets: bool, glossary: bool) -> str:
             "plain and self-explanatory (no abbreviated terms)."
         )
     return base
+
+
+def _drop_cover_sheet(excel_doc: ExcelDoc) -> bool:
+    """Deterministically drop a Cover sheet from an :class:`ExcelDoc`.
+
+    Backstop for the ``cover_sheet=False`` option: removes the first
+    sheet named ``Cover`` (case-insensitive) from both ``sheets`` and
+    ``doc_schema.sheets``, so the checkbox is a hard guarantee
+    regardless of LLM compliance.
+
+    Args:
+        excel_doc: The ExcelDoc to modify in place.
+
+    Returns:
+        ``True`` when a Cover sheet was removed, ``False`` otherwise.
+    """
+    removed = False
+    for sheet in excel_doc.sheets:
+        if sheet.name.strip().lower() == "cover":
+            excel_doc.sheets.remove(sheet)
+            removed = True
+            break
+    if any(name.strip().lower() == "cover" for name in excel_doc.doc_schema.sheets):
+        excel_doc.doc_schema.sheets = [
+            name
+            for name in excel_doc.doc_schema.sheets
+            if name.strip().lower() != "cover"
+        ]
+        removed = True
+    if removed:
+        logger.warning(
+            "Excel document: cover sheet requested off but the LLM still "
+            "emitted a Cover sheet; dropped it deterministically"
+        )
+    return removed
 
 
 def _styling_figures_instruction(specs: list[FigureSpec]) -> str:
@@ -210,6 +272,7 @@ def _plan_workbook(
     report_type: DocumentType,
     kinds: list[str],
     simple_sheets: bool,
+    cover_sheet: bool,
     glossary: bool,
     user_input: str | None,
     seed: int,
@@ -229,6 +292,8 @@ def _plan_workbook(
         report_type: The report type being generated.
         kinds: The requested figure kinds (may be empty).
         simple_sheets: Whether simple-sheets mode is on.
+        cover_sheet: Whether the Cover sheet is requested (ignored in
+            simple-sheets mode).
         glossary: Whether the glossary lookup sheet is requested.
         user_input: Optional free-text user guidance.
         seed: Random seed for deterministic runs.
@@ -257,6 +322,7 @@ def _plan_workbook(
         excel_plan_prompt.replace("<company_profile>", profile.format_prompt())
         .replace("<document_type>", report_type_text)
         .replace("<simple_sheets>", "yes" if simple_sheets else "no")
+        .replace("<cover_sheet>", "yes" if cover_sheet else "no")
         .replace("<glossary>", "yes" if glossary else "no")
         .replace("<figures>", ", ".join(kinds) if kinds else "none")
         .replace(
@@ -283,7 +349,12 @@ def _plan_workbook(
         logger.exception(
             "Excel document: workbook plan call failed; using default plan"
         )
-        return _DEFAULT_EXCEL_PLAN, prompt, time.perf_counter() - t_step, True
+        return (
+            _default_excel_plan(cover_sheet),
+            prompt,
+            (time.perf_counter() - t_step),
+            True,
+        )
     elapsed = time.perf_counter() - t_step
     logger.info(
         "Excel document: LLM call (workbook plan) done in %.3fs (sheets=%s, "
@@ -397,6 +468,7 @@ def generate_document_excel(
     figure_kinds: list[str] | None = None,
     quick_doc: bool = False,
     simple_sheets: bool = False,
+    cover_sheet: bool = True,
     glossary: bool = False,
     gen_tracing: bool = False,
     variation_index: int = 1,
@@ -433,6 +505,11 @@ def generate_document_excel(
             workbook to at most 4 sheets with 1-2 simple tables each. A
             post-check warns (log only) when the LLM still returns 5+
             sheets or figure placements.
+        cover_sheet: When ``False``, omit the Cover sheet (data sheets
+            only). Ignored when *simple_sheets* is ``True`` (simple
+            sheets never include a cover). A deterministic backstop
+            drops a stray Cover sheet the LLM still emits after the
+            styling stage.
         glossary: When ``True``, add a single **Glossary** lookup sheet
             defining the abbreviated terms used in the workbook and
             instruct the prompts to use abbreviated terms sparingly
@@ -504,6 +581,10 @@ def generate_document_excel(
     # Simple-sheets mode never embeds figures.
     kinds: list[str] = [] if simple_sheets else list(figure_kinds or [])
 
+    # Simple-sheets mode never has a cover sheet either; the cover-sheet
+    # flag only matters in default mode.
+    effective_cover = not simple_sheets and cover_sheet
+
     # Per-stage trace (prompts, outputs, timings) aggregated as the
     # pipeline runs; stored on the document record as
     # ``gen_tracing`` and returned on the artifact.
@@ -514,6 +595,7 @@ def generate_document_excel(
         "user_input": user_input,
         "quick_doc": quick_doc,
         "simple_sheets": simple_sheets,
+        "cover_sheet": cover_sheet,
         "glossary": glossary,
         "variation_index": variation_index,
         "variation_total": variation_total,
@@ -534,13 +616,16 @@ def generate_document_excel(
                 variation_index,
                 variation_total,
             )
-            plan = _DEFAULT_EXCEL_PLAN
+            plan = _default_excel_plan(effective_cover)
         plan_prompt = (
             "(skipped: reusing the reference workbook's plan for "
             f"variation {variation_index} of {variation_total})"
         )
         plan_elapsed = 0.0
-        plan_used_default = plan is _DEFAULT_EXCEL_PLAN
+        plan_used_default = plan in (
+            _DEFAULT_EXCEL_PLAN,
+            _DEFAULT_EXCEL_PLAN_NO_COVER,
+        )
     else:
         plan, plan_prompt, plan_elapsed, plan_used_default = _plan_workbook(
             backend,
@@ -548,6 +633,7 @@ def generate_document_excel(
             report_type,
             kinds,
             simple_sheets,
+            effective_cover,
             glossary,
             user_input,
             seed,
@@ -583,7 +669,7 @@ def generate_document_excel(
                 variation_index, variation_total, reference_markdown
             ),
         )
-        .replace("<mode>", _mode_text(simple_sheets, glossary))
+        .replace("<mode>", _mode_text(simple_sheets, glossary, effective_cover))
         .replace(
             "<figures>",
             document_pdf._content_figures_instruction(kinds, quick=quick_doc),
@@ -623,10 +709,14 @@ def generate_document_excel(
     styling_prompt = (
         excel_styling_prompt.replace("<company_profile>", profile.format_prompt())
         .replace("<document_type>", report_type_text)
+        .replace(
+            "<user_input>",
+            user_input.strip() if user_input and user_input.strip() else "None.",
+        )
         .replace("<design_brief>", _design_brief_text(plan))
         .replace("<markdown>", markdown)
         .replace("<figures>", _styling_figures_instruction(figure_specs))
-        .replace("<mode>", _mode_text(simple_sheets, glossary))
+        .replace("<mode>", _mode_text(simple_sheets, glossary, effective_cover))
         .replace("<faker_fields>", ", ".join(sorted(EXCEL_FAKER_FIELDS)))
     )
     t_step = time.perf_counter()
@@ -645,6 +735,10 @@ def generate_document_excel(
         styling_elapsed,
         len(excel_doc.sheets),
     )
+    # Deterministic backstop: when the cover-sheet option is off, a stray
+    # Cover sheet the LLM still emitted is dropped before anything else.
+    if not effective_cover:
+        _drop_cover_sheet(excel_doc)
     # The trace persists the spec-only doc: table structure, positions,
     # styling, column specs, and figure placements — everything needed
     # to re-render the workbook later without LLM calls.

@@ -73,6 +73,7 @@ export function GenerateExcelDialog({
   const [quickDoc, setQuickDoc] = useState(false)
   const [genTrace, setGenTrace] = useState(false)
   const [simpleSheets, setSimpleSheets] = useState(false)
+  const [coverSheet, setCoverSheet] = useState(true)
   const [glossary, setGlossary] = useState(false)
   const [figureKinds, setFigureKinds] = useState<Record<FigureKind, boolean>>(
     () => Object.fromEntries(
@@ -91,6 +92,7 @@ export function GenerateExcelDialog({
       setQuickDoc(false)
       setGenTrace(false)
       setSimpleSheets(false)
+      setCoverSheet(true)
       setGlossary(false)
       setFigureKinds(
         Object.fromEntries(
@@ -129,6 +131,7 @@ export function GenerateExcelDialog({
               .map(({ kind }) => kind),
         quick_doc: quickDoc,
         simple_sheets: simpleSheets,
+        cover_sheet: coverSheet && !simpleSheets,
         glossary: glossary,
         gen_tracing: genTrace,
         count: countValue,
@@ -214,6 +217,26 @@ export function GenerateExcelDialog({
                 <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 hidden w-64 -translate-x-1/2 rounded-md border bg-popover p-2 text-xs font-normal leading-snug text-popover-foreground shadow-md group-hover:block">
                   Skips the cover sheet and embedded figures. Produces a
                   few sheets of simple tables with single-row headers.
+                </span>
+              </span>
+            </span>
+          </label>
+          <label
+            className="flex items-center gap-2 text-sm text-muted-foreground"
+          >
+            <input
+              type="checkbox"
+              checked={coverSheet && !simpleSheets}
+              disabled={state.running || simpleSheets}
+              onChange={(e) => setCoverSheet(e.target.checked)}
+            />
+            <span className="flex items-center gap-1">
+              Cover Sheet
+              <span className="group relative inline-flex">
+                <HelpCircle className="size-3.5 cursor-help text-muted-foreground" />
+                <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 hidden w-64 -translate-x-1/2 rounded-md border bg-popover p-2 text-xs font-normal leading-snug text-popover-foreground shadow-md group-hover:block">
+                  Includes a Cover sheet with the workbook title and company
+                  info. Turn off for data sheets only.
                 </span>
               </span>
             </span>

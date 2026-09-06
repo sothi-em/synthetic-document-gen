@@ -72,6 +72,7 @@ class TestPromptTemplates:
                 "<document_type>": "Onboarding Guide",
                 "<user_input>": "focus on Q3",
                 "<variation>": "No — this is a standalone document.",
+                "<cover_page>": "Include a standalone cover page.",
                 "<figures>": "None. Do not include any figures.",
             },
         )
@@ -85,8 +86,20 @@ class TestPromptTemplates:
     def test_document_html_prompt(self) -> None:
         _check_slots(
             document_html_prompt,
-            {"<company_profile>": "profile text", "<markdown>": "# Doc"},
+            {
+                "<company_profile>": "profile text",
+                "<design_brief>": "Modern minimal.",
+                "<markdown>": "# Doc",
+                "<user_input>": "None.",
+                "<cover_page>": "Include a standalone cover page.",
+                "<figures>": "bar",
+            },
         )
+        # The HTML task stage is the one that emits the page layout: it
+        # must receive both the free-text instructions and the cover
+        # on/off decision.
+        assert document_html_prompt.count("<user_input>") == 1
+        assert document_html_prompt.count("<cover_page>") == 1
 
     def test_document_plan_prompt(self) -> None:
         _check_slots(
@@ -95,6 +108,7 @@ class TestPromptTemplates:
                 "<company_profile>": "Acme Corp",
                 "<document_type>": "name: Onboarding Guide",
                 "<quick_doc>": "no",
+                "<cover_page>": "Include a standalone cover page.",
                 "<figures>": "bar, line",
                 "<user_input>": "None.",
                 "<series>": "No — this is a standalone document.",
@@ -122,6 +136,7 @@ class TestExcelPromptTemplates:
                 "<company_profile>": "Acme Corp",
                 "<document_type>": "name: Quarterly Sales Workbook",
                 "<simple_sheets>": "no",
+                "<cover_sheet>": "yes",
                 "<glossary>": "no",
                 "<figures>": "bar, line",
                 "<user_input>": "None.",
@@ -156,6 +171,7 @@ class TestExcelPromptTemplates:
             {
                 "<company_profile>": "profile text",
                 "<document_type>": "Quarterly Sales Workbook",
+                "<user_input>": "None.",
                 "<design_brief>": "Modern minimal; palette #1F3A5F, #FFFFFF.",
                 "<markdown>": "# Doc\n| a | b |",
                 "<figures>": "1. bar: Units by region",
@@ -172,8 +188,11 @@ class TestExcelPromptTemplates:
         # The optional Glossary sheet is a lookup of workbook abbreviations.
         assert "TOTAL_SV" in excel_styling_prompt
         assert "Glossary" in excel_styling_prompt
-        # Default mode carries a cover sheet with real prose.
+        # Default mode carries a cover sheet with real prose — but only
+        # when the mode says to (no unconditional cover mandate).
         assert "Cover" in excel_styling_prompt
+        assert "only when the Mode section says to" in excel_styling_prompt
+        assert "the cover sheet when the Mode" in excel_styling_prompt
 
 
 class TestQuickPromptTemplates:
@@ -185,6 +204,7 @@ class TestQuickPromptTemplates:
             {
                 "<company_profile>": "Acme Corp",
                 "<document_type>": "name: Onboarding Guide",
+                "<cover_page>": "Include a standalone cover page.",
                 "<figures>": "bar",
                 "<user_input>": "None.",
                 "<series>": "No — this is a standalone document.",
@@ -203,6 +223,7 @@ class TestQuickPromptTemplates:
                 "<document_type>": "Onboarding Guide",
                 "<user_input>": "focus on Q3",
                 "<variation>": "No — this is a standalone document.",
+                "<cover_page>": "No standalone cover page.",
                 "<figures>": "None. Do not include any figures.",
             },
         )
@@ -223,9 +244,15 @@ class TestQuickPromptTemplates:
                 "<company_profile>": "profile text",
                 "<design_brief>": "Modern minimal.",
                 "<markdown>": "# Doc",
+                "<user_input>": "None.",
+                "<cover_page>": "No standalone cover page.",
                 "<figures>": "bar",
             },
         )
+        # Same slots as the full HTML prompt (user instructions + cover
+        # decision reach the page-layout-emitting stage in quick mode too).
+        assert quick_document_html_prompt.count("<user_input>") == 1
+        assert quick_document_html_prompt.count("<cover_page>") == 1
 
     def test_quick_html_system_prompt_rules(self) -> None:
         # The hardcoded WeasyPrint rules must still be present.
