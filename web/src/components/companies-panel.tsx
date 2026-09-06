@@ -23,6 +23,14 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   Select,
@@ -126,6 +134,8 @@ export function CompaniesPanel({
   const [sortKey, setSortKey] = useState<SortKey>("name")
   const [sortDir, setSortDir] = useState<SortDir>("asc")
   const [favoritesOnly, setFavoritesOnly] = useState(false)
+  const [deletingCompany, setDeletingCompany] = useState<CompanySummary | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   function handleSort(key: SortKey) {
     if (key === sortKey) {
@@ -224,6 +234,30 @@ export function CompaniesPanel({
         apply(company.favorite)
         setError(err instanceof Error ? err.message : String(err))
       })
+  }
+
+  async function confirmDeleteCompany() {
+    if (!deletingCompany) return
+    setDeleting(true)
+    setError(null)
+    try {
+      await api.deleteCompany(deletingCompany.id)
+      // Remove locally; the server already cascaded records + files.
+      setCompanies((prev) => prev.filter((c) => c.id !== deletingCompany.id))
+      if (selectedCompanyId === deletingCompany.id) {
+        onSelectCompany(null)
+        setDetail(null)
+        setDetailLoading(false)
+      }
+      setDeletingCompany(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setDeletingCompany(null)
+      // The list may be stale (e.g. concurrent delete) — resync it.
+      void loadCompanies()
+    } finally {
+      setDeleting(false)
+    }
   }
 
   async function removeDocumentType(id: number) {
@@ -372,6 +406,7 @@ export function CompaniesPanel({
                       onSort={handleSort}
                       className="text-right"
                     />
+                    <TableHead className="w-8" aria-label="Delete" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -412,6 +447,20 @@ export function CompaniesPanel({
                       </TableCell>
                       <TableCell className="font-medium">
                         {company.name}
+                      </TableCell>
+                      <TableCell
+                        className="w-8"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setDeletingCompany(company)}
+                          aria-label={`Delete ${company.name}`}
+                          title={`Delete ${company.name}`}
+                          className="text-muted-foreground transition-colors hover:text-red-500"
+                        >
+                          <Trash2 className="size-4" aria-hidden />
+                        </button>
                       </TableCell>
                       <TableCell>{company.industry}</TableCell>
                       <TableCell>{company.headquarters}</TableCell>
@@ -558,6 +607,42 @@ export function CompaniesPanel({
           )}
         </CardContent>
       </Card>
+      <Dialog
+        open={deletingCompany !== null}
+        onOpenChange={(open) => !open && setDeletingCompany(null)}
+      >
+        <DialogContent style={{ maxWidth: "32rem" }}>
+          <DialogHeader>
+            <DialogTitle>Delete company</DialogTitle>
+            <DialogDescription>
+              Delete{" "}
+              <span className="break-all font-medium text-foreground">
+                {deletingCompany?.name}
+              </span>
+              ? This also deletes its {deletingCompany?.num_reports ?? 0}{" "}
+              document type{(deletingCompany?.num_reports ?? 0) === 1 ? "" : "s"}, all
+              generated documents, and the files on disk. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={deleting}
+              onClick={() => setDeletingCompany(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleting}
+              onClick={() => void confirmDeleteCompany()}
+            >
+              <Trash2 />
+              {deleting ? "Deleting…" : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

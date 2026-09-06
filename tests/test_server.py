@@ -443,6 +443,34 @@ class TestCompanyBrowse:
             == 422
         )
 
+    def test_delete_cascades(self, client, company_db, tmp_path) -> None:
+        company_id = company_db[0]
+        # Attach a generated document file so the cascade must remove it.
+        doc_file = tmp_path / "filing.pdf"
+        doc_file.write_bytes(b"%PDF-1.4 test")
+        document_type_id = document_query.get_document_types(company_id)[0]["id"]
+        document_query.save_document(company_id, document_type_id, doc_file)
+        document_query.set_favorite(company_id, True)
+
+        response = client.delete(f"/api/companies/{company_id}")
+        assert response.status_code == 200
+        assert response.json() == {"deleted": True}
+        # Company, document types, document records, and the file are gone.
+        assert document_query.get_company(company_id) is None
+        assert document_query.get_document_types(company_id) == []
+        assert document_query.list_documents(company_id) == []
+        assert not doc_file.exists()
+        # The favorite flag is pruned too.
+        assert company_id not in document_query.get_favorite_company_ids()
+        # The listing no longer includes the company.
+        listed = client.get("/api/companies").json()
+        assert all(item["id"] != company_id for item in listed)
+        # A second delete is a 404.
+        assert client.delete(f"/api/companies/{company_id}").status_code == 404
+
+    def test_delete_missing_company_404(self, client, company_db) -> None:
+        assert client.delete("/api/companies/999999").status_code == 404
+
 
 class TestCompanyReports:
     def test_list(self, client, company_db) -> None:

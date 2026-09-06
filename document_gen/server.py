@@ -912,6 +912,31 @@ def update_company(company_id: int, profile: SyntheticCompany) -> dict:
     return company
 
 
+@app.delete("/api/companies/{company_id}")
+def delete_company(company_id: int) -> dict:
+    """Delete a company and everything it owns.
+
+    Cascades to the company's document types, document records, and the
+    generated files on disk; also prunes the company from the favorites
+    list (handled by ``document_query.delete_company``).
+    """
+    _require_company(company_id)
+    # Collect file paths before the records are gone.
+    filepaths = [r["filepath"] for r in document_query.list_documents(company_id)]
+    if not document_query.delete_company(company_id):
+        raise HTTPException(status_code=404, detail="Company not found")
+    for filepath in filepaths:
+        # Best-effort: a broken record (e.g. a directory) must not fail
+        # the delete after the DB records are already gone.
+        try:
+            Path(filepath).unlink(missing_ok=True)
+        except OSError as exc:
+            logging.getLogger(__name__).warning(
+                "Could not delete %s for company %s: %s", filepath, company_id, exc
+            )
+    return {"deleted": True}
+
+
 @app.post("/api/companies/{company_id}/favorite")
 def set_company_favorite(company_id: int, payload: FavoriteCompanyRequest) -> dict:
     """Mark or unmark the given company as a favorite."""

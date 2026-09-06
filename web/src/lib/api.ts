@@ -474,6 +474,9 @@ export const api = {
     return request<CompanySummary[]>(`/api/companies${query ? `?${query}` : ""}`)
   },
   company: (id: number) => request<CompanyDetail>(`/api/companies/${id}`),
+  /** Delete a company and cascade to its document types, documents, and files. */
+  deleteCompany: (id: number) =>
+    request<{ deleted: boolean }>(`/api/companies/${id}`, { method: "DELETE" }),
   /** Mark or unmark a company as a favorite. */
   setFavorite: (id: number, favorite: boolean) =>
     request<{ favorite: boolean }>(`/api/companies/${id}/favorite`, {
