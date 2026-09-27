@@ -14,6 +14,7 @@ import { api, type HealthInfo } from "@/lib/api"
 import { truncateMiddle } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { AssistantPanel } from "@/components/assistant-panel"
 import { CompaniesPanel } from "@/components/companies-panel"
 import { GenerateCompaniesDialog } from "@/components/generate-dialogs"
 import { LabelsPanel } from "@/components/labels-panel"
@@ -111,8 +112,8 @@ function AppShell() {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-6">
-        <Tabs value={tab} onValueChange={setTab} className="flex flex-col">
+      <main className="mx-auto flex w-full max-w-6xl flex-1 gap-6 px-6 py-6">
+        <Tabs value={tab} onValueChange={setTab} className="flex min-w-0 flex-1 flex-col">
           <TabsList className="mb-6 grid h-auto w-fit grid-cols-2 gap-1 sm:grid-cols-6">
             <TabsTrigger value="overview" className="gap-2">
               <LayoutDashboard className="size-4" />
@@ -179,6 +180,12 @@ function AppShell() {
             <SettingsPanel onSaved={() => setSettingsVersion((v) => v + 1)} />
           </TabsContent>
         </Tabs>
+        <AssistantPanel
+          onNavigate={setTab}
+          onSelectCompany={setSelectedCompanyId}
+          onOpenDocument={() => setTab("documents")}
+          onRefresh={() => setRefreshKey((k) => k + 1)}
+        />
       </main>
 
       <GenerateCompaniesDialog
