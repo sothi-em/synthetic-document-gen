@@ -234,7 +234,7 @@ export function AssistantPanel({
             // Dismiss only via the close button or Escape — an accidental
             // click on the overlay shouldn't drop the user out of a chat.
             onInteractOutside={(e) => e.preventDefault()}
-            className="fixed top-1/2 left-1/2 z-50 flex h-[min(780px,calc(100dvh-3rem))] w-[min(720px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-background shadow-lg data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
+            className="fixed top-1/2 left-1/2 z-50 flex h-[min(780px,calc(100dvh-3rem))] w-[min(880px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-background shadow-lg data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
           >
             <header className="border-b px-4 py-3">
               <div className="flex items-center gap-2">
@@ -327,8 +327,8 @@ export function AssistantPanel({
                       : "Ask about your companies or documents…"
                   }
                   disabled={available === false}
-                  rows={2}
-                  className="min-h-12 flex-1 resize-none"
+                  rows={5}
+                  className="min-h-[114px] flex-1 resize-none"
                 />
                 <Button
                   onClick={send}
