@@ -22,6 +22,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { getSession } from "./session.js";
+import { writeSystemPrompt } from "./model.js";
 import type { UiAction } from "./tools.js";
 
 const PORT = Number(process.env.AGENT_PORT ?? 8090);
@@ -177,6 +178,11 @@ const server = http.createServer((req, res) => {
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "not found" }));
 });
+
+// Write the system prompt once at startup so `<agentDir>/SYSTEM.md`
+// exists as soon as the agent is running (getSession also re-writes it
+// when creating the first session).
+writeSystemPrompt();
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`agent listening on http://127.0.0.1:${PORT}`);
