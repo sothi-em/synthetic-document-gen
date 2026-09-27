@@ -21,8 +21,17 @@ import { DocumentsPanel } from "@/components/documents-panel"
 import { DocumentTypesPanel } from "@/components/document-types-panel"
 import { OverviewPanel } from "@/components/overview-panel"
 import { SettingsPanel } from "@/components/settings-panel"
+import { ScreenProvider, useScreenContext } from "@/lib/screen-context"
 
 export default function App() {
+  return (
+    <ScreenProvider>
+      <AppShell />
+    </ScreenProvider>
+  )
+}
+
+function AppShell() {
   const [health, setHealth] = useState<HealthInfo | null>(null)
   const [industries, setIndustries] = useState<string[]>([])
   const [models, setModels] = useState<string[]>([])
@@ -36,6 +45,14 @@ export default function App() {
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(
     null,
   )
+
+  const { report } = useScreenContext()
+
+  // Report the app-level screen state (active tab + selection) so the
+  // assistant can resolve "this company" to a concrete id.
+  useEffect(() => {
+    report({ activeTab: tab, selectedCompanyId })
+  }, [report, tab, selectedCompanyId])
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setHealth(null))
