@@ -7,6 +7,45 @@ End state: a persistent right-side chat panel. FastAPI spawns the Node agent on 
 
 Locked decisions (confirmed with user): FastAPI spawns + proxies the Node agent; destructive actions require in-chat confirmation; persistent right-side panel; the agent can navigate & select in the UI.
 
+## Implementation steps (sequential)
+Each step is independently executable and verifiable; do them in order. A step's "Done when" is its completion check; the "how" lives in the referenced "Approach" section (e.g. §3).
+
+**Phase 1 — Agent scaffold**
+1. Create `agent/` project files (`package.json`, `tsconfig.json`, `.gitignore`) per §1; `cd agent && pnpm install`. Done when: install succeeds and `node_modules` has `@earendil-works/pi-coding-agent` + `typebox`.
+2. Stub `agent/src/index.ts` as a trivial ESM entry (log "agent ok"). Done when: `pnpm build` emits `agent/dist/index.js` and `node dist/index.js` prints "agent ok".
+
+**Phase 2 — Agent core modules**
+3. `agent/src/backend.ts`: `apiGet`/`apiSend`/`apiWaitJob` (§2). Done when: `tsc` clean.
+4. `agent/src/config.ts`: `getChatConfig()` + ollama/openai provider mapping (§2). Done when: `tsc` clean.
+5. `agent/src/model.ts`: `buildModelRuntime()` (write `models.json`, resolve model, throw if missing) + `writeSystemPrompt()` (§2). Done when: `tsc` clean.
+6. `agent/src/confirm.ts`: `propose`/`consume` in-memory `Map`, 5-min TTL (§3). Done when: `tsc` clean; `propose`→`consume` round-trips and an expired id returns null.
+7. `agent/src/tools.ts`: `registerTools` with all endpoint tools — read, generate (block via `apiWaitJob`), mutate, destructive (propose-only), `confirm_action`, `ui` (§3). Done when: `tsc` clean; every endpoint has a tool and no destructive tool calls its endpoint directly.
+
+**Phase 3 — Agent server (sessions + SSE)**
+8. `agent/src/session.ts`: `getSession` with `DefaultResourceLoader` + `createAgentSession({ noTools:"builtin", excludeTools:BUILTIN_TOOL_NAMES })` + fail-fast built-in assertion + 30-min prune (§4). Done when: `tsc` clean and a created session reports 0 active built-ins.
+9. `agent/src/index.ts`: `node:http` server — `GET /health`, `POST /chat` SSE (`token`/`tool`/`ui`/`done`/`error`, `<screen>` prefix, already-running guard) (§4). Done when: `pnpm build` passes; `node dist/index.js` + `curl localhost:8090/health` → `{"ok":true}`.
+10. Standalone SSE smoke (backend + chat LLM up): `curl -N -X POST localhost:8090/chat` with a message. Done when: events stream in order and end with `done`.
+
+**Phase 4 — Backend (Python)**
+11. `pyproject.toml`: move `httpx>=0.27` from dev to main `dependencies`; `uv sync` (§5). Done when: `uv run python -c "import httpx"` succeeds in the main env.
+12. `document_gen/agent.py`: `AgentHost` (free port, env, `node`/entry resolution, graceful no-node, `start`/`wait_ready`/`stop`) + `proxy_chat`/`proxy_health` (§5). Done when: the module imports cleanly.
+13. `document_gen/server.py`: `lifespan` spawn/stop + `app.state.agent_host`; `GET /api/agent-config`; `POST /api/agent/chat` + `GET /api/agent/health` proxy routes before the static mount (§5). Done when: `uv run pytest` passes.
+14. Backend smoke: `uv run document-gen serve --port 8000` → agent spawned. Done when: `curl localhost:8000/api/agent/health` → 200 and `curl localhost:8000/api/agent-config` → the chat endpoint.
+
+**Phase 5 — Frontend: screen context**
+15. `web/src/lib/screen-context.tsx`: `ScreenState`, `ScreenProvider`, `useScreenContext` (§6). Done when: `tsc` clean.
+16. Wire reporting: `App.tsx` (wrap in `ScreenProvider`, `report({activeTab, selectedCompanyId})`), `CompaniesPanel.tsx` (`visibleCompanies` + `selectedCompany`), `DocumentsPanel.tsx` (`visibleDocuments`) (§6). Done when: `tsc` clean.
+
+**Phase 6 — Frontend: chat panel**
+17. `web/package.json`: add `react-markdown` + `remark-gfm`; `pnpm install` (§7). Done when: installed.
+18. `web/src/lib/agent-api.ts`: `agentHealth` + `agentChat` (fetch + SSE line parser + cancel) (§7). Done when: `tsc` clean.
+19. `web/src/components/assistant-panel.tsx`: messages/streaming state, markdown rendering, context-size subtext, `ui`-event handling, confirm affordance, availability badge (§7). Done when: `tsc` clean.
+20. `web/src/App.tsx`: flex-row layout docking `<AssistantPanel>` on the right (~360px) (§7). Done when: `cd web && pnpm build` passes and the panel is visible.
+
+**Phase 7 — System prompt + end-to-end**
+21. `agent/.pi/SYSTEM.md` content (written by `model.ts` at startup): the 6 prompt points (§8). Done when: the file exists after agent start.
+22. End-to-end: run the "Verification" checklist (query, screen context, agentic action, UI nav, markdown + context size, destructive confirm, no-shell, graceful degradation, `uv run pytest`, `cd web && pnpm build`). Done when: every check passes.
+
 ## Approach
 
 ### 1. Agent service scaffold (`agent/`)
@@ -89,6 +128,8 @@ Tools (name → endpoint):
   - State: `messages: { role: "user"|"assistant"; text: string; tools?: { name: string; phase: string; result?: string }[] }[]`, `busy: boolean`, `available: boolean`; `sessionId` = a UUID persisted in `sessionStorage`.
   - On mount: `agentHealth()` → set `available`.
   - On send: read `screen` from `useScreenContext()`; push the user message; call `agentChat` with handlers that append an assistant message and stream tokens in, render a tool chip per `onTool`, and on `onUi` call `onNavigate`/`onSelectCompany`/`onOpenDocument`; on `onDone` call `onRefresh()`; on `onError`/503 set `available=false`. Disable the input while `busy` or `!available`.
+  - Rendering: the frontend has no markdown renderer today (no `react-markdown`/`marked`/`markdown-it` in `web/package.json`), so add `react-markdown` (`^9`) + `remark-gfm` (`^4`) to `web/package.json` dependencies; render each message's `text` with `<ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>` (both roles) inside a `prose prose-sm dark:prose-invert` container, with code blocks as monospace `<pre className="overflow-x-auto rounded bg-muted p-2 text-xs">` (no syntax-highlighting lib — keep it dependency-light).
+  - Context-size subtext: a small muted line in the panel header (under the title) showing accumulated context size, recomputed every render: `const contextChars = messages.reduce((s, m) => s + m.text.length, 0) + JSON.stringify(screen).length`; render `Context ≈ {(contextChars / 1024).toFixed(1)} KB · ~{Math.round(contextChars / 4)} tokens` in `text-xs text-muted-foreground`. It grows as messages and the serialized screen context accumulate.
   - Confirm affordance: the destructive flow is text-driven (the agent's `propose_*` tool returns a summary and the agent asks); no special button is required — the user confirms by replying, which triggers `confirm_action`.
 - `App.tsx` layout: change `<main>` (L97) to a flex row — existing content wrapped in a `flex-1 min-w-0` div, plus `<AssistantPanel onNavigate={setTab} onSelectCompany={setSelectedCompanyId} onOpenDocument={(id) => { setTab("documents") }} onRefresh={() => setRefreshKey(k => k + 1)} />` docked to the right (fixed ~360px width, full height, internal scroll).
 
@@ -117,6 +158,7 @@ Prereqs: Node 22.19+ on PATH; a chat LLM endpoint configured (Settings tab or `.
    - Screen context: select a company, ask "What documents does this company have?" → agent uses `selectedCompanyId` from `<screen>` → `list_documents(company_id)` → lists them.
    - Agentic action: "Generate 2 companies in the Technology industry and save them" → agent calls `generate_companies` (blocks until the job finishes) → the Companies tab then shows the new companies (refreshKey bumped).
    - UI navigation: "Show me the Documents tab" → agent calls `ui` → the app switches to the Documents tab.
+   - Markdown + context size: ask for a structured answer (e.g. "List my companies as a markdown table") → the reply renders as formatted markdown (tables/bold/code, not raw `**`/`#`/`|`); the context-size subtext in the panel header grows as messages and the serialized screen context accumulate.
    - Destructive confirm: "Delete company <id>" → agent calls `delete_company` (returns summary + `confirmation_id`, does NOT delete) → asks to confirm → reply "yes" → agent calls `confirm_action` → the company is gone (Companies tab refreshes). Reply "no" instead → the company remains.
    - No shell access: ask "Run `ls -la` using the bash tool" → the agent has no `bash`/`powershell` tool and reports it cannot (no shell access). (New-behavior check: built-in tools are not exposed; the fail-fast assertion also guarantees a leaked built-in would have degraded the agent to 503 rather than served it.)
 4. Graceful degradation: rename `agent/dist` away, restart the server → `POST /api/agent/chat` returns 503, the chat panel shows "agent unavailable", and the rest of the app (tabs, generation) still works.
