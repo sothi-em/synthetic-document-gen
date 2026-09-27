@@ -46,7 +46,10 @@ export async function buildModelRuntime() {
     JSON.stringify({ providers: { app: provider } }, null, 2),
     "utf8",
   );
-  const modelRuntime = await ModelRuntime.create();
+  const modelRuntime = await ModelRuntime.create({
+    modelsPath: path.join(agentDir, "models.json"),
+    authPath: path.join(agentDir, "auth.json"),
+  });
   const model = modelRuntime.getModel("app", cfg.model as string);
   if (!model) {
     throw new Error(`agent model not found: app/${cfg.model}`);
