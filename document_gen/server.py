@@ -24,14 +24,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 
-from document_gen import document_excel, document_pdf, document_png, document_query, llm
+from document_gen import (
+    agent,
+    document_excel,
+    document_pdf,
+    document_png,
+    document_query,
+    llm,
+)
 from document_gen.generators.png_gen import distress_image_to_bytes
 from document_gen.models import (
     FIGURE_KINDS,
@@ -99,7 +107,16 @@ async def lifespan(_: FastAPI):
         document_query.db_path(),
         len(db.all()),
     )
+    # Spawn the pi agent (degrades to unavailable when node or the built
+    # entry is missing). The CLI sets DOCUMENT_GEN_API_PORT to the actual
+    # bind port; the default covers `python -m document_gen.server`.
+    api_port = int(os.environ.get("DOCUMENT_GEN_API_PORT", "8000"))
+    agent_host = agent.AgentHost(api_port=api_port)
+    await agent_host.start()
+    await agent_host.wait_ready()
+    app.state.agent_host = agent_host
     yield
+    await agent_host.stop()
 
 
 app = FastAPI(title="document-gen", version=_package_version(), lifespan=lifespan)
@@ -1621,6 +1638,48 @@ def preview_document(doc_id: int) -> FileResponse:
         "Cache-Control": "no-store",
     }
     return FileResponse(path, media_type=media_type, headers=headers)
+
+
+# ---------------------------------------------------------------------------
+# Pi agent (spawned Node process, proxied at /api/agent/*)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/agent-config")
+def agent_config() -> dict[str, Any]:
+    """Chat endpoint config for the locally spawned pi agent.
+
+    Unmasked on purpose: the only consumer is the agent process this
+    server spawns on the same machine.
+    """
+    return llm.load_settings().chat.model_dump()
+
+
+def _agent_host() -> agent.AgentHost | None:
+    """The AgentHost set by lifespan, or None when not running (tests)."""
+    return getattr(app.state, "agent_host", None)
+
+
+@app.get("/api/agent/health")
+async def agent_health() -> dict[str, Any]:
+    """Proxy the agent's health check."""
+    host = _agent_host()
+    if host is None or not host.available:
+        raise HTTPException(status_code=503, detail="agent unavailable")
+    try:
+        return await agent.proxy_health(host.base_url)
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="agent unavailable") from None
+
+
+@app.post("/api/agent/chat")
+async def agent_chat(request: Request) -> StreamingResponse:
+    """Proxy a chat prompt to the agent as an SSE stream."""
+    host = _agent_host()
+    if host is None or not host.available:
+        raise HTTPException(status_code=503, detail="agent unavailable")
+    body = await request.json()
+    return await agent.proxy_chat(host.base_url, body)
 
 
 # Static frontend (mounted last so /api routes take precedence).

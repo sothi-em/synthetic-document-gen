@@ -703,6 +703,7 @@ dependencies = [
     { name = "augraphy" },
     { name = "faker" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "json-repair" },
     { name = "matplotlib" },
     { name = "ollama" },
@@ -727,7 +728,6 @@ embed = [
 [package.dev-dependencies]
 dev = [
     { name = "black" },
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-cov" },
 ]
@@ -738,6 +738,7 @@ requires-dist = [
     { name = "chromadb", marker = "extra == 'embed'", specifier = ">=1.5.9" },
     { name = "faker", specifier = ">=40.11.1" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "json-repair", specifier = ">=0.58.7" },
     { name = "matplotlib", specifier = ">=3.8.0" },
     { name = "ollama", specifier = ">=0.6.1" },
@@ -758,7 +759,6 @@ provides-extras = ["embed"]
 [package.metadata.requires-dev]
 dev = [
     { name = "black", specifier = ">=24.0.0" },
-    { name = "httpx", specifier = ">=0.27" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "pytest-cov", specifier = ">=5.0.0" },
 ]

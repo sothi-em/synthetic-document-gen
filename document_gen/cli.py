@@ -278,6 +278,8 @@ def _run_serve(args: argparse.Namespace) -> None:
             "Web UI dependencies are missing. Install with: uv sync --extra web"
         ) from exc
     print(f"Web UI: http://{args.host}:{args.port}")
+    # The server lifespan points the spawned pi agent at this port.
+    os.environ["DOCUMENT_GEN_API_PORT"] = str(args.port)
     uvicorn.run(app, host=args.host, port=args.port)
 
 
