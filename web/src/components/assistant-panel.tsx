@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
-import { Bot, Check, Loader2, RotateCcw, Send, Sparkles } from "lucide-react"
+import { Bot, Check, Loader2, RotateCcw, Send, Sparkles, X } from "lucide-react"
+import { Dialog } from "radix-ui"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
@@ -7,6 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { agentChat, agentHealth } from "@/lib/agent-api"
+import { cn } from "@/lib/utils"
 import { useScreenContext } from "@/lib/screen-context"
 
 /** A single tool-execution chip shown under an assistant message. */
@@ -51,6 +53,14 @@ function toolResultText(result: unknown): string | undefined {
   return text.length > 300 ? `${text.slice(0, 300)}…` : text
 }
 
+/**
+ * The assistant launcher + chat modal.
+ *
+ * A floating button sits in the bottom-right corner; clicking it opens a
+ * large centered modal with the chat. The component itself stays mounted in
+ * the app tree (so the conversation, session id, and agent-availability state
+ * persist across open/close) — only the modal overlay is conditionally shown.
+ */
 export function AssistantPanel({
   onNavigate,
   onSelectCompany,
@@ -64,6 +74,7 @@ export function AssistantPanel({
   // null = still checking agent availability on mount.
   const [available, setAvailable] = useState<boolean | null>(null)
   const [sessionId, setSessionId] = useState(loadSessionId)
+  const [open, setOpen] = useState(false)
 
   const cancelRef = useRef<(() => void) | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -192,107 +203,155 @@ export function AssistantPanel({
   }
 
   return (
-    <aside className="flex h-full min-h-0 w-[360px] shrink-0 flex-col rounded-xl border bg-card">
-      <header className="border-b px-4 py-3">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <div className="flex size-6 items-center justify-center rounded-md bg-primary/10 text-primary">
-              <Bot className="size-4" />
-            </div>
-            <span className="font-medium">Assistant</span>
-            <StatusBadge available={available} />
-          </div>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={reset}
-            disabled={busy}
-            aria-label="Start a new chat"
-            title="Start a new chat"
-          >
-            <RotateCcw className="size-3.5" />
-          </Button>
-        </div>
-        <p className="mt-1.5 text-xs text-muted-foreground">
-          Context ≈ {(contextChars / 1024).toFixed(1)} KB · ~
-          {Math.round(contextChars / 4)} tokens
-        </p>
-      </header>
+    <>
+      {/* Floating launcher button (hidden while the modal is open). */}
+      {!open && (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label="Open assistant chat"
+          className="fixed right-6 bottom-6 z-40 flex size-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105 focus:outline-hidden focus:ring-2 focus:ring-ring focus:ring-offset-2"
+        >
+          <Bot className="size-6" />
+          <span
+            className={cn(
+              "absolute top-0 right-0 size-3.5 rounded-full border-2 border-background",
+              available === false
+                ? "bg-destructive"
+                : available === null
+                  ? "bg-warning"
+                  : "bg-success",
+            )}
+          />
+        </button>
+      )}
 
-      <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
-        {messages.length === 0 ? (
-          <EmptyState available={available} />
-        ) : (
-          messages.map((m, i) =>
-            m.role === "user" ? (
-              <div
-                key={i}
-                className="ml-auto max-w-[85%] whitespace-pre-wrap rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
-              >
-                {m.text}
+      <Dialog.Root open={open} onOpenChange={setOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/50 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0" />
+          <Dialog.Content
+            aria-label="Assistant chat"
+            // Dismiss only via the close button or Escape — an accidental
+            // click on the overlay shouldn't drop the user out of a chat.
+            onInteractOutside={(e) => e.preventDefault()}
+            className="fixed top-1/2 left-1/2 z-50 flex h-[min(780px,calc(100dvh-3rem))] w-[min(720px,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-background shadow-lg data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95"
+          >
+            <header className="border-b px-4 py-3">
+              <div className="flex items-center gap-2">
+                <div className="flex size-6 items-center justify-center rounded-md bg-primary/10 text-primary">
+                  <Bot className="size-4" />
+                </div>
+                <span className="font-medium">Assistant</span>
+                <StatusBadge available={available} />
               </div>
-            ) : (
-              <div key={i} className="max-w-full">
-                {m.tools && m.tools.length > 0 && (
-                  <ToolChips tools={m.tools} />
-                )}
-                {m.text !== "" && (
-                  <div className="prose prose-sm max-w-none dark:prose-invert [&_a]:text-primary [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:text-xs [&_table]:w-full [&_th]:border [&_td]:border [&_th]:border-border [&_td]:border-border">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={{
-                        pre: (props) => (
-                          <pre
-                            className="overflow-x-auto rounded bg-muted p-2 text-xs"
-                            {...props}
-                          />
-                        ),
-                      }}
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={reset}
+                  disabled={busy}
+                  aria-label="Start a new chat"
+                  title="Start a new chat"
+                >
+                  <RotateCcw className="size-3.5" />
+                </Button>
+                <Dialog.Close asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Close assistant"
+                    title="Close assistant"
+                  >
+                    <X className="size-3.5" />
+                  </Button>
+                </Dialog.Close>
+              </div>
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                Context ≈ {(contextChars / 1024).toFixed(1)} KB · ~
+                {Math.round(contextChars / 4)} tokens
+              </p>
+            </header>
+
+            <div
+              ref={scrollRef}
+              className="flex-1 space-y-4 overflow-y-auto px-4 py-4"
+            >
+              {messages.length === 0 ? (
+                <EmptyState available={available} />
+              ) : (
+                messages.map((m, i) =>
+                  m.role === "user" ? (
+                    <div
+                      key={i}
+                      className="ml-auto max-w-[85%] whitespace-pre-wrap rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
                     >
                       {m.text}
-                    </ReactMarkdown>
-                  </div>
-                )}
-              </div>
-            ),
-          )
-        )}
-      </div>
+                    </div>
+                  ) : (
+                    <div key={i} className="max-w-full">
+                      {m.tools && m.tools.length > 0 && (
+                        <ToolChips tools={m.tools} />
+                      )}
+                      {m.text !== "" && (
+                        <div className="prose prose-sm max-w-none dark:prose-invert [&_a]:text-primary [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:text-xs [&_table]:w-full [&_th]:border [&_td]:border [&_th]:border-border [&_td]:border-border">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              pre: (props) => (
+                                <pre
+                                  className="overflow-x-auto rounded bg-muted p-2 text-xs"
+                                  {...props}
+                                />
+                              ),
+                            }}
+                          >
+                            {m.text}
+                          </ReactMarkdown>
+                        </div>
+                      )}
+                    </div>
+                  ),
+                )
+              )}
+            </div>
 
-      <footer className="border-t p-3">
-        <div className="flex items-end gap-2">
-          <Textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={onInputKeyDown}
-            placeholder={
-              available === false
-                ? "Agent unavailable"
-                : "Ask about your companies or documents…"
-            }
-            disabled={available === false}
-            rows={2}
-            className="min-h-12 flex-1 resize-none"
-          />
-          <Button
-            onClick={send}
-            disabled={!canSend}
-            size="icon"
-            aria-label="Send message"
-          >
-            {busy ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Send className="size-4" />
-            )}
-          </Button>
-        </div>
-        <p className="mt-1.5 flex items-center gap-1 text-xs text-muted-foreground">
-          <Sparkles className="size-3" />
-          Enter to send · Shift+Enter for a new line
-        </p>
-      </footer>
-    </aside>
+            <footer className="border-t p-3">
+              <div className="flex items-end gap-2">
+                <Textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={onInputKeyDown}
+                  placeholder={
+                    available === false
+                      ? "Agent unavailable"
+                      : "Ask about your companies or documents…"
+                  }
+                  disabled={available === false}
+                  rows={2}
+                  className="min-h-12 flex-1 resize-none"
+                />
+                <Button
+                  onClick={send}
+                  disabled={!canSend}
+                  size="icon"
+                  aria-label="Send message"
+                >
+                  {busy ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Send className="size-4" />
+                  )}
+                </Button>
+              </div>
+              <p className="mt-1.5 flex items-center gap-1 text-xs text-muted-foreground">
+                <Sparkles className="size-3" />
+                Enter to send · Shift+Enter for a new line
+              </p>
+            </footer>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+    </>
   )
 }
 
