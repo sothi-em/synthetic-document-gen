@@ -24,9 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -107,16 +106,7 @@ async def lifespan(_: FastAPI):
         document_query.db_path(),
         len(db.all()),
     )
-    # Spawn the pi agent (degrades to unavailable when node or the built
-    # entry is missing). The CLI sets DOCUMENT_GEN_API_PORT to the actual
-    # bind port; the default covers `python -m document_gen.server`.
-    api_port = int(os.environ.get("DOCUMENT_GEN_API_PORT", "8000"))
-    agent_host = agent.AgentHost(api_port=api_port)
-    await agent_host.start()
-    await agent_host.wait_ready()
-    app.state.agent_host = agent_host
     yield
-    await agent_host.stop()
 
 
 app = FastAPI(title="document-gen", version=_package_version(), lifespan=lifespan)
@@ -622,7 +612,7 @@ def health() -> dict:
             state = "up"
         except Exception:
             state = "down"
-        return {"backend": config.backend, "status": state, "model": config.model}
+        return {"status": state, "model": config.model}
 
     return {
         "status": "ok",
@@ -651,7 +641,6 @@ MASKED_API_KEY = "****"
 def _mask_endpoint(config: EndpointConfig) -> dict:
     """Return *config* with the API key masked."""
     return {
-        "backend": config.backend,
         "host": config.host,
         "model": config.model,
         "api_key": MASKED_API_KEY if config.api_key else None,
@@ -1666,45 +1655,38 @@ def preview_document(doc_id: int) -> FileResponse:
 
 
 # ---------------------------------------------------------------------------
-# Pi agent (spawned Node process, proxied at /api/agent/*)
+# Agent (in-process streaming tool loop at /api/agent/*)
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/agent-config")
-def agent_config() -> dict[str, Any]:
-    """Chat endpoint config for the locally spawned pi agent.
+class AgentChatRequest(BaseModel):
+    """Request body for ``POST /api/agent/chat``."""
 
-    Unmasked on purpose: the only consumer is the agent process this
-    server spawns on the same machine.
-    """
-    return llm.load_settings().chat.model_dump()
-
-
-def _agent_host() -> agent.AgentHost | None:
-    """The AgentHost set by lifespan, or None when not running (tests)."""
-    return getattr(app.state, "agent_host", None)
+    sessionId: str = Field(min_length=1, description="Client-side chat session id.")
+    message: str = Field(min_length=1, description="The user's message.")
+    screen: Any = Field(
+        default=None, description="Serialized screen state (UI context)."
+    )
 
 
 @app.get("/api/agent/health")
-async def agent_health() -> dict[str, Any]:
-    """Proxy the agent's health check."""
-    host = _agent_host()
-    if host is None or not host.available:
+def agent_health() -> dict[str, Any]:
+    """Report whether the in-process agent can run.
+
+    Unavailable (503) when no chat endpoint (host and model) is configured.
+    """
+    if not agent.agent_available():
         raise HTTPException(status_code=503, detail="agent unavailable")
-    try:
-        return await agent.proxy_health(host.base_url)
-    except httpx.HTTPError:
-        raise HTTPException(status_code=503, detail="agent unavailable") from None
+    return {"ok": True}
 
 
 @app.post("/api/agent/chat")
-async def agent_chat(request: Request) -> StreamingResponse:
-    """Proxy a chat prompt to the agent as an SSE stream."""
-    host = _agent_host()
-    if host is None or not host.available:
-        raise HTTPException(status_code=503, detail="agent unavailable")
-    body = await request.json()
-    return await agent.proxy_chat(host.base_url, body)
+def agent_chat(payload: AgentChatRequest) -> StreamingResponse:
+    """Run one agent chat turn as an SSE stream."""
+    return StreamingResponse(
+        agent.run_agent(payload.sessionId, payload.message, payload.screen),
+        media_type="text/event-stream",
+    )
 
 
 # Static frontend (mounted last so /api routes take precedence).

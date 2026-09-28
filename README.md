@@ -1,7 +1,7 @@
 # document-gen
 
 Generator for synthetic company profiles and data-driven documents (guides,
-reports, analyses, flyers, ...), powered by LLM pipelines (Ollama) and
+reports, analyses, flyers, ...), powered by LLM pipelines and
 validated with Pydantic. The focus is on generating numbers, data tables, and
 figures — grounded in a fictional company's profile.
 
@@ -21,8 +21,9 @@ figures — grounded in a fictional company's profile.
   into a local ChromaDB collection for semantic search.
 - **Web UI + JSON API** — a browser-based front end for generating, browsing,
   and downloading companies and documents, backed by a FastAPI service.
-- **Pluggable LLM backends** — any Ollama or OpenAI-compatible endpoint can
-  drive both the chat and embedding models.
+- **OpenAI-compatible LLM endpoints** — any OpenAI-compatible server
+  (Ollama via its ``/v1`` route, llama.cpp, LM Studio, vLLM, OpenAI, ...)
+  can drive both the chat and embedding models.
 
 The primary purpose is to produce **synthetic data for testing downstream
 projects**: realistic company records, document types, and data-heavy documents
@@ -56,7 +57,7 @@ The following are planned but not yet implemented:
 
 ## Workflow
 
-1. **Company generation** — queries an Ollama-hosted model to create fictional
+1. **Company generation** — queries an LLM to create fictional
    company profiles (name, industry, description, HQ, size) from an industry
    seed, then generates the list of document types the company would produce.
 2. **Data labels** — generates per-industry data-reporting labels and embeds
@@ -84,27 +85,19 @@ Core dependencies include `weasyprint` (PDF/PNG rendering),
 `opencv-python-headless`, and `augraphy` (the optional "distress"
 post-processing pass for PNG image documents).
 
-Configure the LLM backends via `.env` (copy from `.env.example`). The chat
-(LLM) and embedding endpoints are independent — each can be an Ollama server
-or any OpenAI-compatible endpoint (llama.cpp, LM Studio, vLLM, OpenAI, ...):
+Configure the LLM endpoints via `.env` (copy from `.env.example`). The chat
+(LLM) and embedding endpoints are independent — each is an OpenAI-compatible
+base URL (Ollama's ``/v1`` route, llama.cpp, LM Studio, vLLM, OpenAI, ...):
 
 ```ini
 # Chat (LLM) endpoint
-LLM_BACKEND=ollama                      # or: openai
-LLM_HOST=http://localhost:11434         # ollama host, or base URL for openai
+LLM_HOST=http://localhost:11434/v1
 LLM_MODEL=llama3.2-128k:latest
-# LLM_OPENAI_BASE_URL=http://localhost:8080/v1   # openai backends
 # LLM_API_KEY=
 
 # Embedding endpoint
-EMBED_BACKEND=ollama
-EMBED_HOST=http://localhost:11434
+EMBED_HOST=http://localhost:11434/v1
 EMBED_MODEL=nomic-embed-text:latest
-
-# Legacy Ollama variables still work as fallbacks
-OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=llama3.2-128k:latest
-OLLAMA_EMBED_MODEL=nomic-embed-text:latest
 CHROMA_DB_PATH=./data/chromadb
 
 # Optional: persist company records to a TinyDB file (in-memory by default)
@@ -352,7 +345,8 @@ document-gen/
 │   ├── server.py         # FastAPI web UI + JSON API
 │   ├── pipeline.py       # Company generation pipeline (threaded)
 │   ├── document_query.py # TinyDB store (companies, document_types, documents, user_settings)
-│   ├── llm.py            # LLM backends (Ollama / OpenAI-compatible) + settings
+│   ├── llm.py            # LLM backend (OpenAI-compatible endpoints) + settings
+│   ├── agent.py          # In-process LLM agent (chat tool loop, /api/agent/* SSE)
 │   ├── prompts.py        # LLM prompt templates
 │   ├── document_pdf.py   # PDF document pipeline (markdown -> HTML -> WeasyPrint PDF)
 │   ├── document_png.py   # PNG image pipeline (single page + optional distress pass)
@@ -364,7 +358,7 @@ document-gen/
 │       ├── figures.py    # Figure spec models (kinds, data, styling)
 │       ├── excel.py      # ExcelDoc, Sheet, Table, Column, Cell
 │       ├── distress.py   # DistressOptions (scanned/aged look for PNG documents)
-│       └── llm.py        # LLM settings models (chat/embedding backends)
+│       └── llm.py        # LLM settings models (chat/embedding endpoints)
 ├── web/                  # Frontend: Vite + React + TS, Tailwind v4, shadcn/ui (builds to web/dist)
 ├── tests/                # pytest tests + JSON fixtures in tests/fixtures/
 ├── code_plans/           # Planning documents

@@ -7,20 +7,17 @@ export interface HealthInfo {
 }
 
 export interface EndpointStatus {
-  backend: "ollama" | "openai"
   status: "up" | "down"
   model: string | null
 }
 
 export interface EndpointConfig {
-  backend: "ollama" | "openai"
   host: string | null
   api_key: string | null
   model: string | null
 }
 
 export interface MaskedEndpoint {
-  backend: "ollama" | "openai"
   host: string | null
   model: string | null
   api_key: string | null

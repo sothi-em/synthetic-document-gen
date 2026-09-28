@@ -1,4 +1,8 @@
-"""Backend-agnostic LLM access: Ollama or OpenAI-compatible endpoints.
+"""LLM access via OpenAI-compatible endpoints.
+
+All LLM traffic (chat and embeddings) goes through OpenAI-compatible
+endpoints — Ollama via its ``/v1`` route, llama.cpp, LM Studio, vLLM,
+OpenAI, ... — using the ``openai`` Python client.
 
 The chat (LLM) and embedding endpoints are configured independently via
 :func:`load_settings`. Environment variables provide the defaults; saved
@@ -53,7 +57,7 @@ def chat_timeout() -> float:
 
 
 #: Output-token cap for free-text document generation
-#: (:meth:`OllamaBackend.complete` / :meth:`OpenAIBackend.complete`).
+#: (:meth:`Backend.complete`).
 #: Capping the response keeps long documents from stalling generation.
 MAX_OUTPUT_TOKENS = 8142
 
@@ -86,38 +90,25 @@ def settings_path() -> Path:
 def env_defaults() -> LLMSettings:
     """Build the default settings from environment variables.
 
-    Per-purpose variables (``LLM_*`` / ``EMBED_*``) take precedence; the
-    legacy ``OLLAMA_*`` variables act as fallbacks so existing ``.env``
-    files keep working.
+    Per-purpose variables: ``LLM_HOST`` / ``LLM_API_KEY`` / ``LLM_MODEL``
+    for the chat endpoint and ``EMBED_HOST`` / ``EMBED_API_KEY`` /
+    ``EMBED_MODEL`` for the embedding endpoint. ``*_HOST`` is an
+    OpenAI-compatible base URL (e.g. ``http://localhost:11434/v1`` for
+    Ollama, ``http://localhost:8080/v1`` for llama.cpp).
 
     Returns:
         An ``LLMSettings`` populated from the environment.
     """
     load_dotenv()
 
-    def _endpoint(
-        prefix: str, fallback_host: str | None, fallback_model: str | None
-    ) -> EndpointConfig:
-        backend = os.getenv(f"{prefix}_BACKEND", "ollama").lower()
-        if backend not in ("ollama", "openai"):
-            backend = "ollama"
-        if backend == "openai":
-            host = os.getenv(f"{prefix}_OPENAI_BASE_URL")
-        else:
-            host = os.getenv(f"{prefix}_HOST") or fallback_host
+    def _endpoint(prefix: str) -> EndpointConfig:
         return EndpointConfig(
-            backend=backend,
-            host=host,
+            host=os.getenv(f"{prefix}_HOST") or None,
             api_key=os.getenv(f"{prefix}_API_KEY") or None,
-            model=os.getenv(f"{prefix}_MODEL") or fallback_model,
+            model=os.getenv(f"{prefix}_MODEL") or None,
         )
 
-    return LLMSettings(
-        chat=_endpoint("LLM", os.getenv("OLLAMA_HOST"), os.getenv("OLLAMA_MODEL")),
-        embed=_endpoint(
-            "EMBED", os.getenv("OLLAMA_HOST"), os.getenv("OLLAMA_EMBED_MODEL")
-        ),
-    )
+    return LLMSettings(chat=_endpoint("LLM"), embed=_endpoint("EMBED"))
 
 
 #: Per-process guard so the legacy settings file is imported at most once
@@ -198,241 +189,15 @@ def clear_settings() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Backends
+# Backend
 # ---------------------------------------------------------------------------
 
 
-def _structured_completion(
-    client: Any,
-    model_name: str | None,
-    prompt: str,
-    model: Any,
-    deterministic: bool,
-    seed: int,
-    use_chat: bool,
-    thinking: bool,
-) -> Any:
-    """Run an Ollama completion and validate the response into *model*.
-
-    Shared implementation for :meth:`OllamaBackend.query` (chat endpoint)
-    and :meth:`OllamaBackend.generate` (generate endpoint).
-
-    Args:
-        client: The ``ollama.Client`` to query.
-        model_name: Model ID to use (already resolved by the backend).
-        prompt: The prompt text to send.
-        model: A Pydantic model whose JSON schema describes the expected output.
-        deterministic: When ``True``, the LLM is run at temperature 0 with
-            the given seed; when ``False``, no sampling options are
-            sent and the inference server's defaults apply.
-        seed: Random seed used when ``deterministic`` is ``True``.
-        use_chat: When ``True``, use the chat endpoint, else the generate one.
-        thinking: When ``False``, disable model thinking/reasoning
-            (applied on the chat endpoint only).
-
-    Returns:
-        An instance of *model* populated with the LLM response.
-    """
-    options: dict[str, int] = (
-        {"temperature": 0, "seed": seed, "top_k": 1} if deterministic else {}
-    )
-    schema = model.model_json_schema()
-
-    if use_chat:
-        response = client.chat(
-            model=model_name,
-            messages=[{"role": "user", "content": prompt}],
-            format=schema,
-            options=options,
-            **({"think": False} if not thinking else {}),
-        )
-        raw_response: str = response.message.content
-    else:
-        response = client.generate(
-            model=model_name,
-            prompt=prompt,
-            format=schema,
-            options=options,
-        )
-        raw_response = response.response
-
-    repaired = json_repair.loads(raw_response)
-    return model.model_validate(repaired)
-
-
-class OllamaBackend:
-    """LLM backend backed by an Ollama server."""
+class Backend:
+    """LLM backend for an OpenAI-compatible endpoint (``openai`` client)."""
 
     def __init__(self, config: EndpointConfig, client: Any = None) -> None:
-        """Wrap an Ollama client.
-
-        Args:
-            config: Endpoint settings (host, default model).
-            client: Optional ``ollama.Client`` override (used in tests).
-        """
-        if client is None:
-            from ollama import Client
-
-            client = Client(
-                host=config.host,
-                timeout=chat_timeout(),
-                **(
-                    {"headers": {"Authorization": f"Bearer {config.api_key}"}}
-                    if config.api_key
-                    else {}
-                ),
-            )
-        self._config = config
-        self._client = client
-
-    def _model(self, model_name: str | None) -> str | None:
-        return model_name or self._config.model
-
-    def query(
-        self,
-        prompt: str,
-        model: Any,
-        deterministic: bool = False,
-        seed: int = 0,
-        model_name: str | None = None,
-        thinking: bool = True,
-    ) -> Any:
-        """Structured completion via the Ollama chat endpoint.
-
-        Args:
-            prompt: The prompt text to send.
-            model: A Pydantic model describing the expected output.
-            deterministic: When ``True``, the LLM is run at temperature 0 with
-            the given seed; when ``False``, no sampling options are
-            sent and the inference server's defaults apply.
-            seed: Random seed used when ``deterministic`` is ``True``.
-            model_name: Optional model ID override.
-            thinking: When ``False``, disable model thinking/reasoning.
-        """
-        return _structured_completion(
-            self._client,
-            self._model(model_name),
-            prompt,
-            model,
-            deterministic,
-            seed,
-            use_chat=True,
-            thinking=thinking,
-        )
-
-    def generate(
-        self,
-        prompt: str,
-        model: Any,
-        deterministic: bool = False,
-        seed: int = 0,
-        model_name: str | None = None,
-        thinking: bool = True,
-    ) -> Any:
-        """Structured completion via the Ollama generate endpoint.
-
-        Args:
-            prompt: The prompt text to send.
-            model: A Pydantic model describing the expected output.
-            deterministic: When ``True``, the LLM is run at temperature 0 with
-            the given seed; when ``False``, no sampling options are
-            sent and the inference server's defaults apply.
-            seed: Random seed used when ``deterministic`` is ``True``.
-            model_name: Optional model ID override.
-            thinking: When ``False``, disable model thinking/reasoning
-                (no effect on the generate endpoint).
-        """
-        return _structured_completion(
-            self._client,
-            self._model(model_name),
-            prompt,
-            model,
-            deterministic,
-            seed,
-            use_chat=False,
-            thinking=thinking,
-        )
-
-    def complete(
-        self,
-        prompt: str,
-        system: str | None = None,
-        deterministic: bool = False,
-        seed: int = 0,
-        model_name: str | None = None,
-        max_tokens: int | None = MAX_OUTPUT_TOKENS,
-        thinking: bool = True,
-    ) -> str:
-        """Free-text completion via the Ollama chat endpoint.
-
-        Unlike :meth:`query`, no JSON schema is enforced: the raw text
-        (e.g. markdown or HTML) is returned as-is.
-
-        Args:
-            prompt: The user prompt text.
-            system: Optional system prompt prepended to the conversation.
-            deterministic: When ``True``, the LLM is run at temperature 0 with
-            the given seed; when ``False``, no sampling options are
-            sent and the inference server's defaults apply.
-            seed: Random seed used when ``deterministic`` is ``True``.
-            model_name: Optional model ID override.
-            max_tokens: Output-token cap sent as ``num_predict``; pass
-                ``None`` to leave the model default in force.
-            thinking: When ``False``, disable model thinking/reasoning.
-
-        Returns:
-            The model's raw text response.
-        """
-        options: dict[str, int] = (
-            {"temperature": 0, "seed": seed, "top_k": 1} if deterministic else {}
-        )
-        if max_tokens is not None:
-            options["num_predict"] = max_tokens
-        messages: list[dict[str, str]] = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-        response = self._client.chat(
-            model=self._model(model_name),
-            messages=messages,
-            options=options,
-            **({"think": False} if not thinking else {}),
-        )
-        return response.message.content
-
-    def embed(
-        self, texts: list[str], model: str | None = None, options: dict | None = None
-    ) -> list[Any]:
-        """Embed *texts* with the configured Ollama embedding model.
-
-        The model falls back to the configured default (which itself comes
-        from the ``EMBED_MODEL`` / ``OLLAMA_EMBED_MODEL`` environment via
-        :func:`env_defaults`).
-        """
-        response = self._client.embed(
-            model=self._model(model),
-            input=texts,
-            options=options,
-        )
-        return response["embeddings"]
-
-    def list_models(self, timeout: float | None = None) -> list[str]:
-        """List model IDs available on the Ollama server.
-
-        Args:
-            timeout: Optional per-call timeout override (seconds); used
-                by short connectivity probes so a downed server fails
-                fast instead of waiting out the client timeout.
-        """
-        response = self._client.list(timeout=timeout)
-        return [entry["name"] for entry in response["models"]]
-
-
-class OpenAIBackend:
-    """LLM backend backed by an OpenAI-compatible endpoint (llama.cpp, ...)."""
-
-    def __init__(self, config: EndpointConfig, client: Any = None) -> None:
-        """Wrap an OpenAI-compatible client.
+        """Wrap an ``openai.OpenAI`` client.
 
         Args:
             config: Endpoint settings (base URL, API key, default model).
@@ -463,16 +228,16 @@ class OpenAIBackend:
     ) -> Any:
         """Structured completion via ``chat.completions``.
 
-        OpenAI-compatible servers do not all support Ollama's
-        ``format=<json schema>``, so the schema is appended to the prompt
-        and the response is repaired with ``json_repair``.
+        OpenAI-compatible servers do not all support native JSON-schema
+        output, so the schema is appended to the prompt and the response
+        is repaired with ``json_repair``.
 
         Args:
             prompt: The prompt text to send.
             model: A Pydantic model describing the expected output.
             deterministic: When ``True``, the request runs at temperature 0 with
-            the given seed; when ``False``, no sampling options are
-            sent and the inference server's defaults apply.
+                the given seed; when ``False``, no sampling options are
+                sent and the inference server's defaults apply.
             seed: Random seed used when ``deterministic`` is ``True``.
             model_name: Optional model ID override.
             thinking: When ``False``, disable model thinking/reasoning
@@ -496,29 +261,6 @@ class OpenAIBackend:
         repaired = json_repair.loads(raw_response)
         return model.model_validate(repaired)
 
-    def generate(
-        self,
-        prompt: str,
-        model: Any,
-        deterministic: bool = False,
-        seed: int = 0,
-        model_name: str | None = None,
-        thinking: bool = True,
-    ) -> Any:
-        """Structured completion (mapped to the chat endpoint).
-
-        Args:
-            prompt: The prompt text to send.
-            model: A Pydantic model describing the expected output.
-            deterministic: When ``True``, the request runs at temperature 0 with
-            the given seed; when ``False``, no sampling options are
-            sent and the inference server's defaults apply.
-            seed: Random seed used when ``deterministic`` is ``True``.
-            model_name: Optional model ID override.
-            thinking: When ``False``, disable model thinking/reasoning.
-        """
-        return self.query(prompt, model, deterministic, seed, model_name, thinking)
-
     def complete(
         self,
         prompt: str,
@@ -538,8 +280,8 @@ class OpenAIBackend:
             prompt: The user prompt text.
             system: Optional system prompt prepended to the conversation.
             deterministic: When ``True``, the request runs at temperature 0 with
-            the given seed; when ``False``, no sampling options are
-            sent and the inference server's defaults apply.
+                the given seed; when ``False``, no sampling options are
+                sent and the inference server's defaults apply.
             seed: Random seed used when ``deterministic`` is ``True``.
             model_name: Optional model ID override.
             max_tokens: Output-token cap sent as ``max_tokens``; pass
@@ -567,12 +309,12 @@ class OpenAIBackend:
         )
         return response.choices[0].message.content or ""
 
-    def embed(
-        self, texts: list[str], model: str | None = None, options: dict | None = None
-    ) -> list[Any]:
+    def embed(self, texts: list[str], model: str | None = None) -> list[Any]:
         """Embed *texts* via ``embeddings.create``.
 
-        Ollama-specific *options* (e.g. ``num_ctx``) are ignored.
+        Args:
+            texts: The texts to embed.
+            model: Optional embedding model ID override.
         """
         response = self._client.embeddings.create(model=self._model(model), input=texts)
         return [item.embedding for item in response.data]
@@ -589,22 +331,38 @@ class OpenAIBackend:
         return [entry.id for entry in response.data]
 
 
-def build_backend(config: EndpointConfig) -> OllamaBackend | OpenAIBackend:
-    """Instantiate the backend matching *config*."""
-    if config.backend == "openai":
-        return OpenAIBackend(config)
-    return OllamaBackend(config)
+def build_backend(config: EndpointConfig) -> Backend:
+    """Instantiate the backend for *config*."""
+    return Backend(config)
+
+
+def build_async_client(config: EndpointConfig) -> Any:
+    """Build an ``openai.AsyncOpenAI`` client for *config*.
+
+    Used by the in-process agent (see :mod:`document_gen.agent`) for
+    streaming chat completions with tools.
+
+    Args:
+        config: Endpoint settings (base URL, API key, default model).
+    """
+    from openai import AsyncOpenAI
+
+    return AsyncOpenAI(
+        base_url=config.host,
+        api_key=config.api_key or "not-set",
+        timeout=chat_timeout(),
+    )
 
 
 # ---------------------------------------------------------------------------
 # Accessors (cached; invalidated on save/clear)
 # ---------------------------------------------------------------------------
 
-_cache: dict[str, OllamaBackend | OpenAIBackend] = {}
+_cache: dict[str, Backend] = {}
 _cache_lock = threading.Lock()
 
 
-def _get_backend(purpose: str) -> OllamaBackend | OpenAIBackend:
+def _get_backend(purpose: str) -> Backend:
     with _cache_lock:
         if purpose not in _cache:
             settings = load_settings()
@@ -613,12 +371,12 @@ def _get_backend(purpose: str) -> OllamaBackend | OpenAIBackend:
         return _cache[purpose]
 
 
-def get_chat_backend() -> OllamaBackend | OpenAIBackend:
+def get_chat_backend() -> Backend:
     """Return the cached backend for the chat (LLM) endpoint."""
     return _get_backend("chat")
 
 
-def get_embed_backend() -> OllamaBackend | OpenAIBackend:
+def get_embed_backend() -> Backend:
     """Return the cached backend for the embedding endpoint."""
     return _get_backend("embed")
 

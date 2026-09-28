@@ -10,19 +10,12 @@ from document_gen import document_query, llm
 
 #: Environment variables that influence the default LLM settings.
 LLM_ENV_VARS = (
-    "OLLAMA_HOST",
-    "OLLAMA_MODEL",
-    "OLLAMA_EMBED_MODEL",
-    "LLM_BACKEND",
     "LLM_HOST",
-    "LLM_MODEL",
-    "LLM_OPENAI_BASE_URL",
     "LLM_API_KEY",
-    "EMBED_BACKEND",
+    "LLM_MODEL",
     "EMBED_HOST",
-    "EMBED_MODEL",
-    "EMBED_OPENAI_BASE_URL",
     "EMBED_API_KEY",
+    "EMBED_MODEL",
 )
 
 

@@ -80,7 +80,6 @@ class TestHealthAndMeta:
         status = "up" if up else "down"
         assert body["chat"]["status"] == status
         assert body["embed"]["status"] == status
-        assert body["chat"]["backend"] == "ollama"
         # /api/models follows the purpose parameter; empty when down.
         assert client.get("/api/models").json() == (["chat-model"] if up else [])
         if up:
@@ -115,25 +114,22 @@ class TestLLMSettings:
     def test_get_defaults(self, client, clean_settings) -> None:
         body = client.get("/api/settings").json()
         assert body["chat"] == {
-            "backend": "ollama",
             "host": None,
             "model": None,
             "api_key": None,
             "has_api_key": False,
         }
-        assert body["embed"]["backend"] == "ollama"
+        assert body["embed"]["host"] is None
 
     def test_put_get_delete_roundtrip(self, client, clean_settings) -> None:
         payload = {
             "chat": {
-                "backend": "openai",
                 "host": "http://localhost:8080/v1",
                 "api_key": "secret-key",
                 "model": "qwen2.5-7b",
             },
             "embed": {
-                "backend": "ollama",
-                "host": "http://localhost:11434",
+                "host": "http://localhost:11434/v1",
                 "model": "nomic",
             },
         }
@@ -142,7 +138,6 @@ class TestLLMSettings:
         body = response.json()
         assert body["chat"]["api_key"] == "****"
         assert body["chat"]["has_api_key"] is True
-        assert body["chat"]["backend"] == "openai"
 
         # The stored settings keep the real key; GET masks it.
         stored = document_query.get_setting("llm")
@@ -158,11 +153,11 @@ class TestLLMSettings:
     def test_put_masked_key_keeps_stored_value(self, client, clean_settings) -> None:
         client.put(
             "/api/settings",
-            json={"chat": {"backend": "openai", "api_key": "real-key"}, "embed": {}},
+            json={"chat": {"api_key": "real-key"}, "embed": {}},
         )
         client.put(
             "/api/settings",
-            json={"chat": {"backend": "openai", "api_key": "****"}, "embed": {}},
+            json={"chat": {"api_key": "****"}, "embed": {}},
         )
         stored = document_query.get_setting("llm")
         assert stored["chat"]["api_key"] == "real-key"
@@ -173,7 +168,7 @@ class TestLLMSettings:
             monkeypatch.setattr(
                 llm, "build_backend", lambda config: FakeBackend(["m1", "m2"])
             )
-            payload = {"purpose": "chat", "endpoint": {"backend": "ollama"}}
+            payload = {"purpose": "chat", "endpoint": {}}
         elif case == "embed":
             # The embed purpose must also run an embedding round-trip.
             monkeypatch.setattr(
@@ -181,14 +176,14 @@ class TestLLMSettings:
                 "build_backend",
                 lambda config: FakeBackend(["nomic-embed-text:latest"]),
             )
-            payload = {"purpose": "embed", "endpoint": {"backend": "ollama"}}
+            payload = {"purpose": "embed", "endpoint": {}}
         else:
             monkeypatch.setattr(
                 llm,
                 "build_backend",
                 lambda config: FakeBackend(error=ConnectionError("refused")),
             )
-            payload = {"purpose": "chat", "endpoint": {"backend": "openai"}}
+            payload = {"purpose": "chat", "endpoint": {"host": "http://x/v1"}}
         body = client.post("/api/settings/test", json=payload).json()
         if case == "failure":
             assert body["ok"] is False

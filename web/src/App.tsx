@@ -101,7 +101,7 @@ function AppShell() {
               }
             >
               <Activity className="size-3" />
-              {health.chat.backend} {health.chat.status}
+              {health.chat.status}
               {chatUp && health.chat.model ? (
                 <span title={health.chat.model}>
                   {` · ${truncateMiddle(health.chat.model)}`}
