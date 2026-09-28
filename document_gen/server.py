@@ -26,7 +26,7 @@ from typing import Any
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -921,9 +921,18 @@ def storage_info() -> dict:
 def list_companies(
     industry: str | None = None,
     search: str | None = None,
+    favorite: bool | None = None,
+    limit: int | None = Query(default=None, ge=1),
+    offset: int | None = Query(default=None, ge=0),
 ) -> list[dict]:
-    """List company summaries, optionally filtered by industry or search text."""
-    return document_query.list_companies(industry=industry, search=search)
+    """List company summaries, optionally filtered and paginated."""
+    return document_query.list_companies(
+        industry=industry,
+        search=search,
+        favorite=favorite,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.get("/api/companies/{company_id}")
@@ -989,10 +998,17 @@ def _require_company(company_id: int) -> None:
 
 
 @app.get("/api/companies/{company_id}/document-types")
-def list_company_document_types(company_id: int) -> list[dict]:
-    """Return the document types linked to the given company."""
+def list_company_document_types(
+    company_id: int,
+    search: str | None = None,
+    limit: int | None = Query(default=None, ge=1),
+    offset: int | None = Query(default=None, ge=0),
+) -> list[dict]:
+    """Return the document types linked to the given company, optionally filtered."""
     _require_company(company_id)
-    return document_query.get_document_types(company_id)
+    return document_query.get_document_types(
+        company_id, search=search, limit=limit, offset=offset
+    )
 
 
 @app.put("/api/companies/{company_id}/document-types")
@@ -1461,10 +1477,19 @@ def download_company_image(company_id: int, filename: str) -> FileResponse:
 def list_documents(
     company_id: int | None = None,
     document_type_id: int | None = None,
+    filetype: str | None = None,
+    search: str | None = None,
+    limit: int | None = Query(default=None, ge=1),
+    offset: int | None = Query(default=None, ge=0),
 ) -> list[dict]:
-    """List generated documents, optionally filtered by foreign key."""
+    """List generated documents, optionally filtered and paginated."""
     return document_query.list_documents(
-        company_id=company_id, document_type_id=document_type_id
+        company_id=company_id,
+        document_type_id=document_type_id,
+        filetype=filetype,
+        search=search,
+        limit=limit,
+        offset=offset,
     )
 
 

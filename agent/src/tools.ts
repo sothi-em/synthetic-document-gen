@@ -115,6 +115,18 @@ async function guarded(body: () => Promise<ToolResult>): Promise<ToolResult> {
   }
 }
 
+/** Build a query string from the defined values of *params* ("" when none). */
+function querySuffix(
+  params: Record<string, string | number | boolean | undefined>,
+): string {
+  const q = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) q.set(key, String(value));
+  }
+  const qs = q.toString();
+  return qs ? `?${qs}` : "";
+}
+
 type PendingActionDraft = { method: string; path: string; body?: unknown; summary: string };
 
 /**
@@ -183,19 +195,27 @@ export function registerTools(pi: ExtensionAPI, deps: ToolDeps): void {
     defineTool({
       name: "list_companies",
       label: "List companies",
-      description: "List stored companies, optionally filtered by industry or search text.",
+      description:
+        "List stored companies. Filters: industry (exact), search (text in profile), favorite. Returns the WHOLE store unless limit is set — always pass limit when the user asks for a subset (e.g. limit=5 for '5 companies'); use offset to page.",
       parameters: Type.Object({
         industry: Type.Optional(Type.String()),
         search: Type.Optional(Type.String()),
+        favorite: Type.Optional(Type.Boolean()),
+        limit: Type.Optional(Type.Integer({ minimum: 1 })),
+        offset: Type.Optional(Type.Integer({ minimum: 0 })),
       }),
       execute: async (_id, params) =>
-        run(() => {
-          const q = new URLSearchParams();
-          if (params.industry) q.set("industry", params.industry);
-          if (params.search) q.set("search", params.search);
-          const qs = q.toString();
-          return apiGet(`/api/companies${qs ? `?${qs}` : ""}`);
-        }),
+        run(() =>
+          apiGet(
+            `/api/companies${querySuffix({
+              industry: params.industry,
+              search: params.search,
+              favorite: params.favorite,
+              limit: params.limit,
+              offset: params.offset,
+            })}`,
+          ),
+        ),
     }),
     defineTool({
       name: "get_company",
@@ -208,24 +228,49 @@ export function registerTools(pi: ExtensionAPI, deps: ToolDeps): void {
     defineTool({
       name: "list_document_types",
       label: "List document types",
-      description: "List the document types linked to a company.",
-      parameters: Type.Object({ company_id: Type.Integer() }),
+      description:
+        "List the document types linked to a company. Filter: search (text in name/category/purpose). Pass limit/offset for subsets.",
+      parameters: Type.Object({
+        company_id: Type.Integer(),
+        search: Type.Optional(Type.String()),
+        limit: Type.Optional(Type.Integer({ minimum: 1 })),
+        offset: Type.Optional(Type.Integer({ minimum: 0 })),
+      }),
       execute: async (_id, params) =>
         run(() =>
-          apiGet(`/api/companies/${params.company_id}/document-types`),
+          apiGet(
+            `/api/companies/${params.company_id}/document-types${querySuffix({
+              search: params.search,
+              limit: params.limit,
+              offset: params.offset,
+            })}`,
+          ),
         ),
     }),
     defineTool({
       name: "list_documents",
       label: "List documents",
-      description: "List generated document records, optionally for one company.",
+      description:
+        "List generated document records. Filters: company_id, document_type_id, filetype (pdf/xlsx/png), search (filename text). Returns ALL records unless limit is set — pass limit for subsets; use offset to page.",
       parameters: Type.Object({
         company_id: Type.Optional(Type.Integer()),
+        document_type_id: Type.Optional(Type.Integer()),
+        filetype: Type.Optional(Type.String()),
+        search: Type.Optional(Type.String()),
+        limit: Type.Optional(Type.Integer({ minimum: 1 })),
+        offset: Type.Optional(Type.Integer({ minimum: 0 })),
       }),
       execute: async (_id, params) =>
         run(() =>
           apiGet(
-            `/api/documents${params.company_id != null ? `?company_id=${params.company_id}` : ""}`,
+            `/api/documents${querySuffix({
+              company_id: params.company_id,
+              document_type_id: params.document_type_id,
+              filetype: params.filetype,
+              search: params.search,
+              limit: params.limit,
+              offset: params.offset,
+            })}`,
           ),
         ),
     }),

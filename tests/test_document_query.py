@@ -146,6 +146,38 @@ class TestRead:
             "Acme Corp"
         ]
 
+    def test_list_summaries_favorite_limit_offset(self) -> None:
+        acme = document_query.save_company(_make_profile("Acme Corp", "Retail"))
+        document_query.save_companies(
+            [
+                _make_profile("Beta Inc", "Energy"),
+                _make_profile("Gamma LLC", "Retail"),
+                _make_profile("Delta Co", "Energy"),
+            ]
+        )
+        document_query.set_favorite(acme, True)
+        # The favorite filter matches the flag in both directions.
+        assert [i["name"] for i in document_query.list_companies(favorite=True)] == [
+            "Acme Corp"
+        ]
+        assert [i["name"] for i in document_query.list_companies(favorite=False)] == [
+            "Beta Inc",
+            "Gamma LLC",
+            "Delta Co",
+        ]
+        # limit/offset page over the filtered list.
+        assert [i["name"] for i in document_query.list_companies(limit=2)] == [
+            "Acme Corp",
+            "Beta Inc",
+        ]
+        assert [
+            i["name"] for i in document_query.list_companies(limit=2, offset=2)
+        ] == ["Gamma LLC", "Delta Co"]
+        # limit is applied after the industry filter.
+        assert [
+            i["name"] for i in document_query.list_companies(industry="Energy", limit=1)
+        ] == ["Beta Inc"]
+
     def test_get_company_missing_returns_none(self) -> None:
         assert document_query.get_company(999999) is None
 
@@ -244,6 +276,48 @@ class TestDocumentTypes:
         assert reports[0]["company_id"] == doc_id
         assert reports[0]["name"] == "Onboarding Guide"
         assert "id" in reports[0]
+
+    def test_search_and_pagination(self) -> None:
+        doc_id = document_query.save_company(_make_profile("Acme Corp", "Retail"))
+        document_query.save_document_types(
+            doc_id,
+            [
+                DocumentType(
+                    name="Onboarding Guide", category="HR", purpose="New hires"
+                ),
+                DocumentType(
+                    name="Quarterly KPI Report", category="Finance", purpose="KPIs"
+                ),
+                DocumentType(
+                    name="Competitor Analysis",
+                    category="Strategy",
+                    purpose="Market",
+                ),
+            ],
+        )
+        # search matches name, category and purpose (case-insensitive).
+        assert [
+            r["name"] for r in document_query.get_document_types(doc_id, search="kpi")
+        ] == ["Quarterly KPI Report"]
+        assert [
+            r["name"]
+            for r in document_query.get_document_types(doc_id, search="market")
+        ] == ["Competitor Analysis"]
+        assert [
+            r["name"]
+            for r in document_query.get_document_types(doc_id, search="finance")
+        ] == ["Quarterly KPI Report"]
+        # limit/offset page over the filtered list.
+        assert [
+            r["name"] for r in document_query.get_document_types(doc_id, limit=2)
+        ] == [
+            "Onboarding Guide",
+            "Quarterly KPI Report",
+        ]
+        assert [
+            r["name"]
+            for r in document_query.get_document_types(doc_id, limit=1, offset=1)
+        ] == ["Quarterly KPI Report"]
 
     def test_append_replace_and_empty(self) -> None:
         doc_id = document_query.save_company(_make_profile("Acme Corp", "Retail"))
@@ -483,6 +557,30 @@ class TestReportDocuments:
         assert [item["company_id"] for item in by_company] == [second]
         by_report = document_query.list_documents(document_type_id=first_report)
         assert [item["document_type_id"] for item in by_report] == [first_report]
+
+    def test_filetype_search_and_pagination(self, tmp_path) -> None:
+        company_id, report_id = self._company_with_report()
+        for filename in ("guide.pdf", "data.xlsx", "chart.png"):
+            path = tmp_path / filename
+            path.write_bytes(b"x")
+            document_query.save_document(company_id, report_id, path)
+
+        # filetype is an exact match.
+        assert [
+            i["filename"] for i in document_query.list_documents(filetype="xlsx")
+        ] == ["data.xlsx"]
+        # search is a case-insensitive substring of the filename.
+        assert [
+            i["filename"] for i in document_query.list_documents(search="GUIDE")
+        ] == ["guide.pdf"]
+        # limit/offset page over the newest-first filtered list.
+        assert [i["filename"] for i in document_query.list_documents(limit=2)] == [
+            "chart.png",
+            "data.xlsx",
+        ]
+        assert [
+            i["filename"] for i in document_query.list_documents(limit=1, offset=1)
+        ] == ["data.xlsx"]
 
     def test_update_document_size(self, tmp_path) -> None:
         company_id, report_id = self._company_with_report()

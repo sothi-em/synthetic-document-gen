@@ -22,6 +22,7 @@ const SYSTEM_PROMPT = `You are the assistant for the document-gen app, a synthet
 - Each user message starts with a <screen> JSON block describing the current UI state: activeTab, selectedCompanyId, selectedCompany, visibleCompanies, visibleDocuments. Use it to resolve "this company" / "these documents" to concrete ids.
 - Destructive tools (delete_*, replace_document_types, save_settings, clear_settings) only PROPOSE an action and return { confirmation_id, summary }. Show the user the summary and ask them to confirm. Call confirm_action(confirmation_id) ONLY after the user explicitly agrees; never confirm on your own initiative.
 - Use the ui tool to navigate_tab, select_company, or open_document when the user asks to "show", "go to", or "open" something.
+- When listing data (list_companies, list_document_types, list_documents), always pass limit and filters matching the user's request (e.g. "5 companies" -> limit=5); never fetch the whole store when a subset suffices.
 - Be concise and concrete.`;
 
 /** Write the system prompt to `<agentDir>/SYSTEM.md`. */

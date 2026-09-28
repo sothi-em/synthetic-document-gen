@@ -361,6 +361,31 @@ class TestCompanyBrowse:
         assert searched
         assert all("luxestays" in json.dumps(item).lower() for item in searched)
 
+    def test_list_favorite_limit_offset(self, client, company_db) -> None:
+        full = client.get("/api/companies").json()
+        assert len(full) == len(company_db)
+        # limit/offset page over the store.
+        first_page = client.get("/api/companies", params={"limit": 5}).json()
+        assert [i["id"] for i in first_page] == [i["id"] for i in full[:5]]
+        second_page = client.get(
+            "/api/companies", params={"limit": 5, "offset": 5}
+        ).json()
+        assert [i["id"] for i in second_page] == [i["id"] for i in full[5:10]]
+        # limit applies after the industry filter.
+        hospitality = client.get(
+            "/api/companies", params={"industry": "Hospitality", "limit": 3}
+        ).json()
+        assert len(hospitality) == 3
+        assert all(i["industry"] == "Hospitality" for i in hospitality)
+        # favorite filter: the marked company only, then the rest.
+        client.post(f"/api/companies/{company_db[0]}/favorite", json={"favorite": True})
+        favs = client.get("/api/companies", params={"favorite": True}).json()
+        assert [i["id"] for i in favs] == [company_db[0]]
+        rest = client.get("/api/companies", params={"favorite": False}).json()
+        assert len(rest) == len(company_db) - 1
+        # limit=0 is rejected.
+        assert client.get("/api/companies", params={"limit": 0}).status_code == 422
+
     def test_list_empty_db_returns_empty(self, client, tmp_path, monkeypatch) -> None:
         monkeypatch.setenv("TINYDB_PATH", str(tmp_path / "empty.db"))
         document_query.reset_db()
@@ -481,6 +506,24 @@ class TestCompanyReports:
         assert body
         assert all(report["company_id"] == company_id for report in body)
         assert {"id", "name", "category", "purpose"} <= set(body[0])
+
+    def test_list_search_and_pagination(self, client, company_db) -> None:
+        company_id = company_db[0]
+        base = f"/api/companies/{company_id}/document-types"
+        full = client.get(base).json()
+        assert len(full) >= 3
+        # search matches name and category (case-insensitive).
+        onboarding = client.get(base, params={"search": "ONBOARDING"}).json()
+        assert [r["name"] for r in onboarding] == ["New-Hire Onboarding Guide"]
+        kpi = client.get(base, params={"search": "kpi"}).json()
+        assert [r["name"] for r in kpi] == ["Quarterly Operations & KPI Report"]
+        # limit/offset page over the filtered list.
+        first_page = client.get(base, params={"limit": 2}).json()
+        assert [r["name"] for r in first_page] == [r["name"] for r in full[:2]]
+        second_page = client.get(base, params={"limit": 1, "offset": 1}).json()
+        assert [r["name"] for r in second_page] == [r["name"] for r in full[1:2]]
+        # limit=0 is rejected.
+        assert client.get(base, params={"limit": 0}).status_code == 422
 
     def test_put_replaces_all(self, client, company_db) -> None:
         company_id = company_db[0]
@@ -1801,6 +1844,31 @@ class TestDocuments:
             "/api/documents", params={"document_type_id": report_id}
         ).json()
         assert [item["id"] for item in by_report] == [first]
+
+    def test_list_filetype_search_pagination(
+        self, client, company_db, tmp_path
+    ) -> None:
+        self._record(company_db[0], tmp_path, name="guide.pdf")
+        self._record(company_db[0], tmp_path, name="data.xlsx")
+        self._record(company_db[0], tmp_path, name="chart.png")
+
+        by_type = client.get("/api/documents", params={"filetype": "xlsx"}).json()
+        assert [item["filename"] for item in by_type] == ["data.xlsx"]
+        # search is a case-insensitive substring of the filename.
+        by_search = client.get("/api/documents", params={"search": "GUIDE"}).json()
+        assert [item["filename"] for item in by_search] == ["guide.pdf"]
+        # limit/offset page over the newest-first list.
+        first_page = client.get("/api/documents", params={"limit": 2}).json()
+        assert [item["filename"] for item in first_page] == [
+            "chart.png",
+            "data.xlsx",
+        ]
+        second_page = client.get(
+            "/api/documents", params={"limit": 1, "offset": 1}
+        ).json()
+        assert [item["filename"] for item in second_page] == ["data.xlsx"]
+        # limit=0 is rejected.
+        assert client.get("/api/documents", params={"limit": 0}).status_code == 422
 
     def test_download_serves_file(self, client, company_db, tmp_path) -> None:
         doc_id = self._record(company_db[0], tmp_path)
