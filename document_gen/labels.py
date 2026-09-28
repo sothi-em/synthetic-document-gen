@@ -24,12 +24,6 @@ from document_gen.prompts import generate_data_label
 
 LABELS_FILE = Path("labels.json")
 
-EMBED_OPTIONS: dict = {
-    "num_ctx": 2048,  # Explicit context size
-    "num_predict": -1,  # Keeps token allocation dynamic
-    "temperature": 0.0,  # Disables creative variance
-}
-
 #: Number of texts per embedding round-trip in :func:`embed_labels`.
 EMBED_CHUNK_SIZE = 64
 
@@ -123,7 +117,7 @@ def embed_labels() -> None:
             "\n".join(f"{key} - {value}" for key, value in label.items())
             for label in chunk
         ]
-        embeddings = get_embed_backend().embed(texts=texts, options=EMBED_OPTIONS)
+        embeddings = get_embed_backend().embed(texts=texts)
         collection.add(
             ids=[str(uuid.uuid4()) for _ in chunk],
             documents=texts,
@@ -143,7 +137,7 @@ def query_labels(query: str, n_results: int = 5) -> None:
         )
         return
 
-    embedding = get_embed_backend().embed(texts=[query], options=EMBED_OPTIONS)[0]
+    embedding = get_embed_backend().embed(texts=[query])[0]
     results = collection.query(query_embeddings=[embedding], n_results=n_results)
     print(results)
 

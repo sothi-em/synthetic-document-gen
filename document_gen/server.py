@@ -15,6 +15,7 @@ import logging
 import mimetypes
 import os
 import queue
+import shutil
 import threading
 import time
 import uuid
@@ -25,19 +26,28 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 
-from document_gen import document_excel, document_pdf, document_png, document_query, llm
+from document_gen import (
+    agent,
+    document_excel,
+    document_pdf,
+    document_png,
+    document_query,
+    llm,
+)
 from document_gen.generators.png_gen import distress_image_to_bytes
 from document_gen.models import (
     FIGURE_KINDS,
     CompanyProfile,
     DistressOptions,
+    DocumentPlan,
     EndpointConfig,
+    ExcelPlan,
     LLMSettings,
     DocumentType,
     SyntheticCompany,
@@ -370,6 +380,27 @@ class DocumentImageRequest(BaseModel):
     _check_figure_kinds = field_validator("figure_kinds")(_validate_figure_kinds)
 
 
+class TransientDocumentRequest(BaseModel):
+    """In-process request for a NON-persisted agent document."""
+
+    filetype: Literal["pdf", "excel", "png"]
+    company_id: int = Field(ge=1)
+    report: str = Field(min_length=1, description="Document type name or index")
+    user_input: str | None = None
+    model: str | None = None
+    figure_kinds: list[str] = Field(default_factory=list)
+    quick_doc: bool = False
+    cover_page: bool = True
+    simple_sheets: bool = False
+    cover_sheet: bool = True
+    glossary: bool = False
+    a4_aspect: bool = True
+    count: int = Field(default=1, ge=1, le=10)
+    reuse_plan: dict | None = None
+
+    _check_figure_kinds = field_validator("figure_kinds")(_validate_figure_kinds)
+
+
 class JobStatus(BaseModel):
     """Snapshot of a generation job."""
 
@@ -398,7 +429,7 @@ class _Job:
     status: str = "running"
     error: str | None = None
     company_ids: list[int] = field(default_factory=list)
-    result: list[dict] | None = None
+    result: Any = None
     logs: list[str] = field(default_factory=list)
     subscribers: list[queue.Queue] = field(default_factory=list)
     _subscribers_lock: threading.Lock = field(
@@ -605,7 +636,7 @@ def health() -> dict:
             state = "up"
         except Exception:
             state = "down"
-        return {"backend": config.backend, "status": state, "model": config.model}
+        return {"status": state, "model": config.model}
 
     return {
         "status": "ok",
@@ -634,7 +665,6 @@ MASKED_API_KEY = "****"
 def _mask_endpoint(config: EndpointConfig) -> dict:
     """Return *config* with the API key masked."""
     return {
-        "backend": config.backend,
         "host": config.host,
         "model": config.model,
         "api_key": MASKED_API_KEY if config.api_key else None,
@@ -904,9 +934,18 @@ def storage_info() -> dict:
 def list_companies(
     industry: str | None = None,
     search: str | None = None,
+    favorite: bool | None = None,
+    limit: int | None = Query(default=None, ge=1),
+    offset: int | None = Query(default=None, ge=0),
 ) -> list[dict]:
-    """List company summaries, optionally filtered by industry or search text."""
-    return document_query.list_companies(industry=industry, search=search)
+    """List company summaries, optionally filtered and paginated."""
+    return document_query.list_companies(
+        industry=industry,
+        search=search,
+        favorite=favorite,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.get("/api/companies/{company_id}")
@@ -972,10 +1011,17 @@ def _require_company(company_id: int) -> None:
 
 
 @app.get("/api/companies/{company_id}/document-types")
-def list_company_document_types(company_id: int) -> list[dict]:
-    """Return the document types linked to the given company."""
+def list_company_document_types(
+    company_id: int,
+    search: str | None = None,
+    limit: int | None = Query(default=None, ge=1),
+    offset: int | None = Query(default=None, ge=0),
+) -> list[dict]:
+    """Return the document types linked to the given company, optionally filtered."""
     _require_company(company_id)
-    return document_query.get_document_types(company_id)
+    return document_query.get_document_types(
+        company_id, search=search, limit=limit, offset=offset
+    )
 
 
 @app.put("/api/companies/{company_id}/document-types")
@@ -1142,6 +1188,194 @@ def _run_pdf_job(job: _Job, company_id: int, request: DocumentPdfRequest) -> Non
         finally:
             job._publish()
             job._close_subscribers()
+
+
+def _run_transient_job(job: _Job, request: TransientDocumentRequest) -> None:
+    """Worker thread: generate NON-persisted document(s), publish progress.
+
+    Files land in the shared agent temp directory
+    (:func:`agent.transient_dir`) and no document record is created
+    (``record=False``). Iteration 1 runs with the caller-supplied plan
+    (if any); iterations 2+ reuse the previous document's markdown and
+    plan so the series shares one structure with different data. A
+    mid-batch failure keeps the documents generated so far in
+    ``job.result``.
+    """
+    with _capture_job_logs(job):
+        logger.info(
+            "Transient %s job %s: starting (company %s, report=%r, model=%r, count=%d)",
+            request.filetype.upper(),
+            job.id,
+            request.company_id,
+            request.report,
+            request.model,
+            request.count,
+        )
+        t0 = time.perf_counter()
+        documents: list[dict] = []
+        try:
+            out_dir = agent.transient_dir()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            plan = None
+            if request.reuse_plan is not None:
+                if request.filetype == "excel":
+                    plan = ExcelPlan.model_validate(request.reuse_plan)
+                else:
+                    plan = DocumentPlan.model_validate(request.reuse_plan)
+            previous = None
+            for index in range(1, request.count + 1):
+                variation_kwargs: dict[str, Any] = {}
+                if index == 1 and plan is not None:
+                    variation_kwargs = {"reuse_plan": plan}
+                if previous is not None:
+                    variation_kwargs = {
+                        "variation_index": index,
+                        "variation_total": request.count,
+                        "reference_markdown": previous.markdown,
+                        "reuse_plan": previous.plan,
+                    }
+                if request.filetype == "pdf":
+                    artifact = document_pdf.generate_document_pdf(
+                        request.company_id,
+                        request.report,
+                        user_input=request.user_input,
+                        model_name=request.model,
+                        output_dir=out_dir,
+                        record=False,
+                        figure_kinds=request.figure_kinds,
+                        quick_doc=request.quick_doc,
+                        cover_page=request.cover_page,
+                        gen_tracing=False,
+                        **variation_kwargs,
+                    )
+                    path = artifact.pdf_path
+                elif request.filetype == "excel":
+                    artifact = document_excel.generate_document_excel(
+                        request.company_id,
+                        request.report,
+                        user_input=request.user_input,
+                        model_name=request.model,
+                        output_dir=out_dir,
+                        record=False,
+                        figure_kinds=request.figure_kinds,
+                        quick_doc=request.quick_doc,
+                        simple_sheets=request.simple_sheets,
+                        cover_sheet=request.cover_sheet,
+                        glossary=request.glossary,
+                        gen_tracing=False,
+                        **variation_kwargs,
+                    )
+                    path = artifact.xlsx_path
+                else:
+                    artifact = document_png.generate_document_image(
+                        request.company_id,
+                        request.report,
+                        user_input=request.user_input,
+                        model_name=request.model,
+                        output_dir=out_dir,
+                        record=False,
+                        figure_kinds=request.figure_kinds,
+                        a4_aspect=request.a4_aspect,
+                        gen_tracing=False,
+                        **variation_kwargs,
+                    )
+                    path = artifact.png_path
+                documents.append(
+                    {
+                        "filetype": request.filetype,
+                        "filename": path.name,
+                        "path": str(path),
+                        "report": artifact.report_name,
+                        "markdown": artifact.markdown,
+                        "plan": (
+                            artifact.plan.model_dump(mode="json")
+                            if artifact.plan
+                            else None
+                        ),
+                    }
+                )
+                logger.info(
+                    "Transient %s job %s: document %d/%d done in %.3fs -> %s",
+                    request.filetype,
+                    job.id,
+                    index,
+                    request.count,
+                    time.perf_counter() - t0,
+                    path,
+                )
+                previous = artifact
+                job.completed += 1
+                job._publish()
+            job.result = {"documents": documents}
+            job.company_ids = [request.company_id]
+            job.status = "done"
+        except Exception as exc:  # surface any pipeline error to the client
+            logger.exception(
+                "Transient %s job %s: failed after %.3fs",
+                request.filetype,
+                job.id,
+                time.perf_counter() - t0,
+            )
+            if documents:
+                job.result = {"documents": documents}
+            job.status = "error"
+            job.error = str(exc)
+        finally:
+            job._publish()
+            job._close_subscribers()
+
+
+def start_transient_document(request: TransientDocumentRequest) -> dict:
+    """Start a background job generating a NON-persisted document.
+
+    In-process entry point for the agent's ``generate_document`` tool
+    (not an HTTP route): validates the company, spawns the worker thread,
+    and returns the job id for polling via :func:`job_status`.
+    """
+    _require_company(request.company_id)
+    job = _Job(id=uuid.uuid4().hex[:12], total=request.count)
+    _JOBS[job.id] = job
+    _prune_jobs()
+    threading.Thread(
+        target=_run_transient_job, args=(job, request), daemon=True
+    ).start()
+    return {"id": job.id, "status": job.status, "total": job.total}
+
+
+def persist_transient_document(company_id: int, report: str, source_path: Path) -> dict:
+    """Move a transient document into the output dir and record it.
+
+    In-process entry point for the agent's ``persist_document`` tool
+    (not an HTTP route): resolves the document type, moves the file into
+    the configured output directory, and creates the document record.
+    """
+    out_dir = document_pdf.resolve_output_dir()
+    if out_dir is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No document output directory set: configure it in the "
+                "Settings tab or set the DOCUMENTS_DIR environment variable."
+            ),
+        )
+    report_type_id = document_query.get_document_type_id(company_id, report)
+    if report_type_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document type {report!r} not found for company {company_id}",
+        )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dest = document_pdf._unique_path(
+        out_dir, source_path.stem, source_path.suffix.lstrip(".")
+    )
+    shutil.move(str(source_path), dest)
+    doc_id = document_query.save_document(company_id, report_type_id, dest)
+    return {
+        "doc_id": doc_id,
+        "filename": dest.name,
+        "filepath": str(dest),
+        "download_url": f"/api/documents/{doc_id}/download",
+    }
 
 
 @app.post("/api/companies/{company_id}/pdf", status_code=202)
@@ -1444,10 +1678,19 @@ def download_company_image(company_id: int, filename: str) -> FileResponse:
 def list_documents(
     company_id: int | None = None,
     document_type_id: int | None = None,
+    filetype: str | None = None,
+    search: str | None = None,
+    limit: int | None = Query(default=None, ge=1),
+    offset: int | None = Query(default=None, ge=0),
 ) -> list[dict]:
-    """List generated documents, optionally filtered by foreign key."""
+    """List generated documents, optionally filtered and paginated."""
     return document_query.list_documents(
-        company_id=company_id, document_type_id=document_type_id
+        company_id=company_id,
+        document_type_id=document_type_id,
+        filetype=filetype,
+        search=search,
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -1621,6 +1864,57 @@ def preview_document(doc_id: int) -> FileResponse:
         "Cache-Control": "no-store",
     }
     return FileResponse(path, media_type=media_type, headers=headers)
+
+
+# ---------------------------------------------------------------------------
+# Agent (in-process streaming tool loop at /api/agent/*)
+# ---------------------------------------------------------------------------
+
+
+class AgentChatRequest(BaseModel):
+    """Request body for ``POST /api/agent/chat``."""
+
+    sessionId: str = Field(min_length=1, description="Client-side chat session id.")
+    message: str = Field(min_length=1, description="The user's message.")
+    screen: Any = Field(
+        default=None, description="Serialized screen state (UI context)."
+    )
+
+
+@app.get("/api/agent/health")
+def agent_health() -> dict[str, Any]:
+    """Report whether the in-process agent can run.
+
+    Unavailable (503) when no chat endpoint (host and model) is configured.
+    """
+    if not agent.agent_available():
+        raise HTTPException(status_code=503, detail="agent unavailable")
+    return {"ok": True}
+
+
+@app.post("/api/agent/chat")
+def agent_chat(payload: AgentChatRequest) -> StreamingResponse:
+    """Run one agent chat turn as an SSE stream."""
+    return StreamingResponse(
+        agent.run_agent(payload.sessionId, payload.message, payload.screen),
+        media_type="text/event-stream",
+    )
+
+
+@app.get("/api/agent/documents/{token}")
+def download_transient_document(token: str) -> FileResponse:
+    """Serve a transient (non-persisted) agent document for download.
+
+    The file lives in the shared agent temp directory and is not recorded
+    in the document store; the token expires after the transient TTL.
+    """
+    entry = agent.get_transient_document(token)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Document expired or unknown")
+    path = Path(entry["path"])
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    return FileResponse(path, filename=entry["filename"])
 
 
 # Static frontend (mounted last so /api routes take precedence).

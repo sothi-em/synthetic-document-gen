@@ -14,6 +14,7 @@ import { api, type HealthInfo } from "@/lib/api"
 import { truncateMiddle } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { AssistantPanel } from "@/components/assistant-panel"
 import { CompaniesPanel } from "@/components/companies-panel"
 import { GenerateCompaniesDialog } from "@/components/generate-dialogs"
 import { LabelsPanel } from "@/components/labels-panel"
@@ -21,8 +22,17 @@ import { DocumentsPanel } from "@/components/documents-panel"
 import { DocumentTypesPanel } from "@/components/document-types-panel"
 import { OverviewPanel } from "@/components/overview-panel"
 import { SettingsPanel } from "@/components/settings-panel"
+import { ScreenProvider, useScreenContext } from "@/lib/screen-context"
 
 export default function App() {
+  return (
+    <ScreenProvider>
+      <AppShell />
+    </ScreenProvider>
+  )
+}
+
+function AppShell() {
   const [health, setHealth] = useState<HealthInfo | null>(null)
   const [industries, setIndustries] = useState<string[]>([])
   const [models, setModels] = useState<string[]>([])
@@ -36,6 +46,14 @@ export default function App() {
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(
     null,
   )
+
+  const { report } = useScreenContext()
+
+  // Report the app-level screen state (active tab + selection) so the
+  // assistant can resolve "this company" to a concrete id.
+  useEffect(() => {
+    report({ activeTab: tab, selectedCompanyId })
+  }, [report, tab, selectedCompanyId])
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setHealth(null))
@@ -83,7 +101,7 @@ export default function App() {
               }
             >
               <Activity className="size-3" />
-              {health.chat.backend} {health.chat.status}
+              {health.chat.status}
               {chatUp && health.chat.model ? (
                 <span title={health.chat.model}>
                   {` · ${truncateMiddle(health.chat.model)}`}
@@ -163,6 +181,13 @@ export default function App() {
           </TabsContent>
         </Tabs>
       </main>
+
+      <AssistantPanel
+        onNavigate={setTab}
+        onSelectCompany={setSelectedCompanyId}
+        onOpenDocument={() => setTab("documents")}
+        onRefresh={() => setRefreshKey((k) => k + 1)}
+      />
 
       <GenerateCompaniesDialog
         open={generateCompaniesOpen}

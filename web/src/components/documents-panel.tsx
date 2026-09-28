@@ -11,6 +11,7 @@ import {
 } from "lucide-react"
 
 import { api, type DocumentRecord } from "@/lib/api"
+import { useScreenContext } from "@/lib/screen-context"
 import { DocumentViewDialog } from "@/components/document-view-dialog"
 import { TraceViewDialog } from "@/components/trace-view-dialog"
 import { Badge } from "@/components/ui/badge"
@@ -152,6 +153,21 @@ export function DocumentsPanel({ refreshKey }: DocumentsPanelProps) {
       ),
     )
   }, [documents, query])
+
+  const { report } = useScreenContext()
+
+  // Report the rendered table rows so the assistant can resolve
+  // "these documents" to concrete ids.
+  useEffect(() => {
+    report({
+      visibleDocuments: filtered.map((d) => ({
+        id: d.id,
+        filename: d.filename,
+        company_id: d.company_id,
+        filetype: d.filetype,
+      })),
+    })
+  }, [report, filtered])
 
   return (
     <Card>

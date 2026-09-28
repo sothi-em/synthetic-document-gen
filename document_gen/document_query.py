@@ -278,6 +278,17 @@ def _doc_to_dict(doc: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _paginate(
+    items: list[dict[str, Any]], limit: int | None, offset: int | None
+) -> list[dict[str, Any]]:
+    """Apply *offset* then *limit* to a filtered list (no-op when unset)."""
+    if offset:
+        items = items[offset:]
+    if limit is not None:
+        items = items[:limit]
+    return items
+
+
 # ---------------------------------------------------------------------------
 # User settings
 # ---------------------------------------------------------------------------
@@ -461,11 +472,22 @@ def append_document_types(company_id: int, documents: list[DocumentType]) -> lis
         return _insert_document_types(company_id, documents)
 
 
-def get_document_types(company_id: int) -> list[dict[str, Any]]:
-    """Fetch all document types linked to a company.
+def get_document_types(
+    company_id: int,
+    search: str | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch document types linked to a company, optionally filtered.
 
     Args:
         company_id: The TinyDB ``doc_id`` of the owning company.
+        search: When set, only document types whose name, category or
+            purpose contains the text (case-insensitive) are returned.
+        limit: When set, at most this many (filtered) document types are
+            returned.
+        offset: When set, this many (filtered) document types are skipped
+            before *limit* is applied.
 
     Returns:
         A list of document-type dicts with ``id``, ``company_id``,
@@ -473,7 +495,18 @@ def get_document_types(company_id: int) -> list[dict[str, Any]]:
         ``documents`` keys.
     """
     with _LOCK:
-        return _attach_documents(_get_document_types_unlocked(company_id))
+        reports = _attach_documents(_get_document_types_unlocked(company_id))
+    if search:
+        needle = search.lower()
+        reports = [
+            report
+            for report in reports
+            if needle
+            in " ".join(
+                str(report.get(key) or "") for key in ("name", "category", "purpose")
+            ).lower()
+        ]
+    return _paginate(reports, limit, offset)
 
 
 def delete_document_types(company_id: int) -> bool:
@@ -643,13 +676,25 @@ def get_document(doc_id: int) -> dict[str, Any] | None:
 def list_documents(
     company_id: int | None = None,
     document_type_id: int | None = None,
+    filetype: str | None = None,
+    search: str | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
 ) -> list[dict[str, Any]]:
-    """List document records, optionally filtered by foreign key.
+    """List document records, optionally filtered and paginated.
 
     Args:
         company_id: When set, only records for this company are returned.
         document_type_id: When set, only records for this document type
             are returned.
+        filetype: When set, only records with this exact filetype
+            (e.g. ``pdf``, ``xlsx``) are returned.
+        search: When set, only records whose filename contains the text
+            (case-insensitive) are returned.
+        limit: When set, at most this many (filtered) records are
+            returned.
+        offset: When set, this many (filtered) records are skipped before
+            *limit* is applied.
 
     Returns:
         A list of record dicts with ``id``, the stored file fields,
@@ -663,6 +708,11 @@ def list_documents(
             docs = [d for d in docs if d.get("company_id") == company_id]
         if document_type_id is not None:
             docs = [d for d in docs if d.get("document_type_id") == document_type_id]
+        if filetype is not None:
+            docs = [d for d in docs if d.get("filetype") == filetype]
+        if search:
+            needle = search.lower()
+            docs = [d for d in docs if needle in d.get("filename", "").lower()]
         company_names = {
             d.doc_id: (d.get("profile") or {}).get("name")  # type: ignore[attr-defined]
             for d in db.all()
@@ -677,7 +727,7 @@ def list_documents(
         item["company_name"] = company_names.get(doc.get("company_id"))
         item["report_name"] = report_names.get(doc.get("document_type_id"))
         items.append(item)
-    return items
+    return _paginate(items, limit, offset)
 
 
 def delete_documents(
@@ -944,14 +994,23 @@ def get_company(doc_id: int) -> dict[str, Any] | None:
 def list_companies(
     industry: str | None = None,
     search: str | None = None,
+    favorite: bool | None = None,
+    limit: int | None = None,
+    offset: int | None = None,
 ) -> list[dict[str, Any]]:
-    """List company summaries, optionally filtered.
+    """List company summaries, optionally filtered and paginated.
 
     Args:
         industry: When set, only companies whose profile industry matches
             exactly are returned.
         search: When set, only companies whose profile JSON contains the
             text (case-insensitive) are returned.
+        favorite: When set, only companies whose favorite flag matches
+            are returned.
+        limit: When set, at most this many (filtered) companies are
+            returned.
+        offset: When set, this many (filtered) companies are skipped
+            before *limit* is applied.
 
     Returns:
         A list of summary dicts with ``id``, ``name``, ``industry``,
@@ -979,6 +1038,9 @@ def list_companies(
             and search.lower() not in json.dumps(profile, ensure_ascii=False).lower()
         ):
             continue
+        is_favorite = doc.doc_id in favorite_ids  # type: ignore[attr-defined]
+        if favorite is not None and is_favorite != favorite:
+            continue
         items.append(
             {
                 "id": doc.doc_id,  # type: ignore[attr-defined]
@@ -987,10 +1049,10 @@ def list_companies(
                 "headquarters": profile.get("headquarters"),
                 "size": profile.get("size"),
                 "num_reports": counts.get(doc.doc_id, 0),  # type: ignore[attr-defined]
-                "favorite": doc.doc_id in favorite_ids,  # type: ignore[attr-defined]
+                "favorite": is_favorite,
             }
         )
-    return items
+    return _paginate(items, limit, offset)
 
 
 def update_company(doc_id: int, profile: SyntheticCompany) -> dict[str, Any] | None:

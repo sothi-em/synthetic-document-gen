@@ -41,13 +41,6 @@ import {
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { DirectoryBrowserDialog } from "@/components/directory-browser-dialog"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 
 interface SettingsPanelProps {
   onSaved: () => void
@@ -144,7 +137,6 @@ function AppearanceCard() {
 }
 
 interface EndpointDraft {
-  backend: "ollama" | "openai"
   host: string
   api_key: string
   model: string
@@ -157,7 +149,6 @@ interface TestState {
 
 function toDraft(masked: MaskedEndpoint): EndpointDraft {
   return {
-    backend: masked.backend,
     host: masked.host ?? "",
     api_key: masked.api_key ?? "",
     model: masked.model ?? "",
@@ -166,7 +157,6 @@ function toDraft(masked: MaskedEndpoint): EndpointDraft {
 
 function toConfig(draft: EndpointDraft): EndpointConfig {
   return {
-    backend: draft.backend,
     host: draft.host.trim() || null,
     api_key: draft.api_key.trim() === "" ? null : draft.api_key.trim(),
     model: draft.model.trim() || null,
@@ -200,52 +190,20 @@ function EndpointCard({
       </CardHeader>
       <CardContent className="grid gap-4">
         <label className="flex flex-col gap-1.5 text-sm text-muted-foreground">
-          Backend
-          <Select
-            value={draft.backend}
-            onValueChange={(value) =>
-              set({ backend: value as EndpointDraft["backend"] })
-            }
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ollama">Ollama</SelectItem>
-              <SelectItem value="openai">OpenAI-compatible (llama.cpp)</SelectItem>
-            </SelectContent>
-          </Select>
+          Base URL
+          <Input
+            value={draft.host}
+            onChange={(e) => set({ host: e.target.value })}
+            placeholder="http://localhost:8080/v1"
+          />
         </label>
-        {draft.backend === "ollama" ? (
-          <label className="flex flex-col gap-1.5 text-sm text-muted-foreground">
-            Host
-            <Input
-              value={draft.host}
-              onChange={(e) => set({ host: e.target.value })}
-              placeholder="http://localhost:11434"
-            />
-          </label>
-        ) : (
-          <label className="flex flex-col gap-1.5 text-sm text-muted-foreground">
-            Base URL
-            <Input
-              value={draft.host}
-              onChange={(e) => set({ host: e.target.value })}
-              placeholder="http://localhost:8080/v1"
-            />
-          </label>
-        )}
         <label className="flex flex-col gap-1.5 text-sm text-muted-foreground">
           API key
           <Input
             type="password"
             value={draft.api_key}
             onChange={(e) => set({ api_key: e.target.value })}
-            placeholder={
-              draft.backend === "ollama"
-                ? "optional (e.g. for an authenticated proxy)"
-                : "optional for local servers"
-            }
+            placeholder="optional for local servers"
           />
         </label>
         <label className="flex flex-col gap-1.5 text-sm text-muted-foreground">

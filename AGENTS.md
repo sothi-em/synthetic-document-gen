@@ -7,9 +7,10 @@ document-gen/
 ├── document_gen/           # main package
 │   ├── cli.py              # CLI entry point (document-gen command)
 │   ├── server.py           # FastAPI JSON API; serves built frontend from web/dist
+│   ├── agent.py            # in-process LLM agent (streaming tool loop, sessions, confirmations)
 │   ├── pipeline.py         # company generation pipeline (threaded)
 │   ├── document_query.py   # TinyDB store: companies, document_types, documents, user_settings (in-memory default, TINYDB_PATH for file)
-│   ├── llm.py              # LLM backends (Ollama / OpenAI-compatible), settings, structured completion
+│   ├── llm.py              # LLM backend (OpenAI-compatible endpoints via the openai client), settings
 │   ├── prompts.py          # LLM prompt templates
 │   ├── document_pdf.py     # PDF document pipeline (markdown -> HTML -> WeasyPrint PDF)
 │   ├── labels.py           # data-label generation + ChromaDB embedding
@@ -68,7 +69,7 @@ uv run black .
   (see `[tool.coverage]` in `pyproject.toml`).
 - Pipeline/llm/labels modules require a live LLM server and are not
   unit-tested; keep them thin and test the models/prompts/CLI parsing instead.
-- `server.py` is unit-tested with the Ollama client mocked out
+- `server.py` is unit-tested with the LLM client mocked out
   (`tests/test_server.py`).
 - `document_query.py` is fully unit-tested (`tests/test_document_query.py`) by
   pointing `TINYDB_PATH` at a temp file or unsetting it for in-memory mode;
@@ -85,6 +86,6 @@ uv run black .
 ## Configuration
 
 Runtime config comes from `.env` (never commit it; see `.env.example`):
-`OLLAMA_HOST`, `OLLAMA_MODEL`, `OLLAMA_EMBED_MODEL`, `CHROMA_DB_PATH`,
+`LLM_HOST`, `LLM_API_KEY`, `LLM_MODEL`, `EMBED_HOST`, `EMBED_API_KEY`, `EMBED_MODEL`, `CHROMA_DB_PATH`,
 `TINYDB_PATH` (optional; unset = in-memory company store),
 `DOCUMENTS_DIR` (optional; default PDF output directory, legacy `REPORTS_DIR` still honored).

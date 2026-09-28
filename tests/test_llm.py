@@ -1,4 +1,4 @@
-"""Tests for the LLM backend abstraction and settings persistence."""
+"""Tests for the LLM backend and settings persistence."""
 
 from __future__ import annotations
 
@@ -37,45 +37,42 @@ class TestSettings:
         [
             # No env vars: bare defaults.
             ({}, LLMSettings()),
-            # Legacy Ollama variables.
+            # Ollama via its OpenAI-compatible /v1 route.
             (
                 {
-                    "OLLAMA_HOST": "http://ollama:11434",
-                    "OLLAMA_MODEL": "llama3.2:latest",
-                    "OLLAMA_EMBED_MODEL": "nomic-embed-text:latest",
+                    "LLM_HOST": "http://ollama:11434/v1",
+                    "LLM_MODEL": "llama3.2:latest",
+                    "EMBED_HOST": "http://ollama:11434/v1",
+                    "EMBED_MODEL": "nomic-embed-text:latest",
                 },
                 LLMSettings(
                     chat=EndpointConfig(
-                        backend="ollama",
-                        host="http://ollama:11434",
+                        host="http://ollama:11434/v1",
                         model="llama3.2:latest",
                     ),
                     embed=EndpointConfig(
-                        backend="ollama",
-                        host="http://ollama:11434",
+                        host="http://ollama:11434/v1",
                         model="nomic-embed-text:latest",
                     ),
                 ),
             ),
-            # Per-purpose variables.
+            # Per-purpose variables, independent servers.
             (
                 {
-                    "LLM_BACKEND": "openai",
-                    "LLM_OPENAI_BASE_URL": "http://llamacpp:8080/v1",
+                    "LLM_HOST": "http://llamacpp:8080/v1",
+                    "LLM_API_KEY": "secret",
                     "LLM_MODEL": "qwen2.5-7b",
-                    "EMBED_HOST": "http://ollama:11434",
+                    "EMBED_HOST": "http://ollama:11434/v1",
                 },
                 LLMSettings(
                     chat=EndpointConfig(
-                        backend="openai",
                         host="http://llamacpp:8080/v1",
+                        api_key="secret",
                         model="qwen2.5-7b",
                     ),
-                    embed=EndpointConfig(backend="ollama", host="http://ollama:11434"),
+                    embed=EndpointConfig(host="http://ollama:11434/v1"),
                 ),
             ),
-            # Unknown backend falls back to ollama.
-            ({"LLM_BACKEND": "groq"}, LLMSettings()),
         ],
     )
     def test_env_defaults(self, monkeypatch, env: dict, expected: LLMSettings) -> None:
@@ -87,9 +84,9 @@ class TestSettings:
         assert llm.load_settings() == LLMSettings()
 
     def test_load_merges_saved_over_env(self, monkeypatch) -> None:
-        monkeypatch.setenv("OLLAMA_HOST", "http://env-host")
-        monkeypatch.setenv("OLLAMA_MODEL", "env-model")
-        monkeypatch.setenv("OLLAMA_EMBED_MODEL", "env-embed-model")
+        monkeypatch.setenv("LLM_HOST", "http://env-host/v1")
+        monkeypatch.setenv("LLM_MODEL", "env-model")
+        monkeypatch.setenv("EMBED_MODEL", "env-embed-model")
         path = llm.settings_path()
         path.write_text(
             json.dumps({"chat": {"model": "saved-model"}, "embed": {}}),
@@ -98,7 +95,7 @@ class TestSettings:
         settings = llm.load_settings()
         # Saved value wins; env value survives for unset keys.
         assert settings.chat.model == "saved-model"
-        assert settings.chat.host == "http://env-host"
+        assert settings.chat.host == "http://env-host/v1"
         assert settings.embed.model == "env-embed-model"
 
     def test_legacy_migration_runs_once_per_process(self) -> None:
@@ -116,9 +113,7 @@ class TestSettings:
         assert document_query.get_setting(llm.SETTINGS_KEY) is None
 
     def test_save_and_clear(self) -> None:
-        settings = LLMSettings(
-            chat=EndpointConfig(backend="openai", host="http://x/v1", api_key="k")
-        )
+        settings = LLMSettings(chat=EndpointConfig(host="http://x/v1", api_key="k"))
         llm.save_settings(settings)
         stored = document_query.get_setting(llm.SETTINGS_KEY)
         assert stored is not None
@@ -129,15 +124,15 @@ class TestSettings:
         assert document_query.get_setting(llm.SETTINGS_KEY) is None
         assert llm.load_settings().chat.api_key is None
 
-    def test_accessors_respect_saved_backends_and_cache(self) -> None:
+    def test_accessors_use_saved_endpoints_and_cache(self) -> None:
         llm.save_settings(
             LLMSettings(
-                chat=EndpointConfig(backend="openai", host="http://x/v1"),
-                embed=EndpointConfig(backend="ollama", host="http://o:11434"),
+                chat=EndpointConfig(host="http://chat/v1"),
+                embed=EndpointConfig(host="http://embed/v1"),
             )
         )
-        assert isinstance(llm.get_chat_backend(), llm.OpenAIBackend)
-        assert isinstance(llm.get_embed_backend(), llm.OllamaBackend)
+        assert isinstance(llm.get_chat_backend(), llm.Backend)
+        assert isinstance(llm.get_embed_backend(), llm.Backend)
         # Backends are cached until the cache is invalidated.
         first = llm.get_chat_backend()
         assert llm.get_chat_backend() is first
@@ -148,29 +143,6 @@ class TestSettings:
 # ---------------------------------------------------------------------------
 # Backends
 # ---------------------------------------------------------------------------
-
-
-class FakeOllamaClient:
-    """Records calls and returns canned Ollama responses."""
-
-    def __init__(self, embeddings: list[list[float]] | None = None):
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-        self._embedding = embeddings[0] if embeddings else [0.1, 0.2]
-
-    def chat(self, **kwargs) -> Any:
-        self.calls.append(("chat", kwargs))
-        return SimpleNamespace(message=SimpleNamespace(content='{"value": "ok"}'))
-
-    def generate(self, **kwargs) -> Any:
-        self.calls.append(("generate", kwargs))
-        return SimpleNamespace(response='{"value": "ok"}')
-
-    def embed(self, **kwargs) -> Any:
-        self.calls.append(("embed", kwargs))
-        return {"embeddings": [list(self._embedding) for _ in kwargs["input"]]}
-
-    def list(self, timeout: float | None = None) -> Any:
-        return {"models": [{"name": "m1:latest"}, {"name": "m2:latest"}]}
 
 
 class FakeOpenAIClient:
@@ -205,99 +177,11 @@ class FakeOpenAIClient:
         )
 
 
-class TestOllamaBackend:
-    def test_query_delegates_to_chat(self) -> None:
-        client = FakeOllamaClient()
-        backend = llm.OllamaBackend(
-            EndpointConfig(model="default-model"), client=client
-        )
-        result = backend.query("prompt", OutModel, deterministic=True, seed=7)
-        assert result.value == "ok"
-        kind, kwargs = client.calls[0]
-        assert kind == "chat"
-        assert kwargs["model"] == "default-model"
-        assert kwargs["options"] == {"temperature": 0, "seed": 7, "top_k": 1}
-        # A per-call model override wins over the endpoint default.
-        backend.query("p", OutModel, model_name="override")
-        assert client.calls[1][1]["model"] == "override"
-
-    def test_generate_uses_generate_endpoint(self) -> None:
-        client = FakeOllamaClient()
-        backend = llm.OllamaBackend(EndpointConfig(), client=client)
-        result = backend.generate("p", OutModel)
-        assert result.value == "ok"
-        assert client.calls[0][0] == "generate"
-
-    def test_embed(self) -> None:
-        client = FakeOllamaClient()
-        backend = llm.OllamaBackend(EndpointConfig(model="nomic"), client=client)
-        assert backend.embed(["a", "b"]) == [[0.1, 0.2], [0.1, 0.2]]
-        kind, kwargs = client.calls[0]
-        assert kind == "embed"
-        assert kwargs["model"] == "nomic"
-
-    def test_list_models(self) -> None:
-        backend = llm.OllamaBackend(EndpointConfig(), client=FakeOllamaClient())
-        assert backend.list_models() == ["m1:latest", "m2:latest"]
-
-    @pytest.mark.parametrize(
-        ("kwargs", "expected_options", "expected_messages"),
-        [
-            # Deterministic with a system prompt.
-            (
-                dict(system="s", deterministic=True, seed=3),
-                {
-                    "temperature": 0,
-                    "seed": 3,
-                    "top_k": 1,
-                    "num_predict": llm.MAX_OUTPUT_TOKENS,
-                },
-                [
-                    {"role": "system", "content": "s"},
-                    {"role": "user", "content": "p"},
-                ],
-            ),
-            # Plain: user message only, capped at the default.
-            (
-                dict(),
-                {"num_predict": llm.MAX_OUTPUT_TOKENS},
-                [{"role": "user", "content": "p"}],
-            ),
-            (dict(max_tokens=100), {"num_predict": 100}, None),
-            (dict(max_tokens=None), {}, None),  # unlimited
-        ],
-    )
-    def test_complete(self, kwargs, expected_options, expected_messages) -> None:
-        client = FakeOllamaClient()
-        backend = llm.OllamaBackend(EndpointConfig(model="m"), client=client)
-        # No JSON parsing: the raw model text is returned as-is.
-        result = backend.complete("p", **kwargs)
-        assert result == '{"value": "ok"}'
-        kind, call_kwargs = client.calls[0]
-        assert kind == "chat"
-        assert "format" not in call_kwargs
-        assert call_kwargs["options"] == expected_options
-        if expected_messages is not None:
-            assert call_kwargs["messages"] == expected_messages
-
-    @pytest.mark.parametrize("thinking", [True, False])
-    def test_thinking(self, thinking: bool) -> None:
-        client = FakeOllamaClient()
-        backend = llm.OllamaBackend(EndpointConfig(model="m"), client=client)
-        backend.query("p", OutModel, thinking=thinking)
-        backend.complete("p", thinking=thinking)
-        for _, call_kwargs in client.calls:
-            if thinking:
-                assert "think" not in call_kwargs
-            else:
-                assert call_kwargs["think"] is False
-
-
-class TestOpenAIBackend:
+class TestBackend:
     @pytest.mark.parametrize("deterministic", [True, False])
     def test_query_appends_schema_and_validates(self, deterministic: bool) -> None:
         client = FakeOpenAIClient()
-        backend = llm.OpenAIBackend(EndpointConfig(model="qwen"), client=client)
+        backend = llm.Backend(EndpointConfig(model="qwen"), client=client)
         result = backend.query("make it", OutModel, deterministic=deterministic, seed=3)
         assert result.value == "ok"
         kwargs = client.chat_kwargs
@@ -313,15 +197,9 @@ class TestOpenAIBackend:
             assert "temperature" not in kwargs
             assert "seed" not in kwargs
 
-    def test_generate_maps_to_chat(self) -> None:
-        client = FakeOpenAIClient()
-        backend = llm.OpenAIBackend(EndpointConfig(model="qwen"), client=client)
-        assert backend.generate("p", OutModel).value == "ok"
-        assert client.chat_kwargs is not None
-
     def test_embed(self) -> None:
         client = FakeOpenAIClient()
-        backend = llm.OpenAIBackend(EndpointConfig(model="default"), client=client)
+        backend = llm.Backend(EndpointConfig(model="default"), client=client)
         assert backend.embed(["x"]) == [[0.5, 0.6]]
         assert client.embed_kwargs["model"] == "default"
         # A per-call model override wins over the endpoint default.
@@ -329,7 +207,7 @@ class TestOpenAIBackend:
         assert client.embed_kwargs["model"] == "other"
 
     def test_list_models(self) -> None:
-        backend = llm.OpenAIBackend(EndpointConfig(), client=FakeOpenAIClient())
+        backend = llm.Backend(EndpointConfig(), client=FakeOpenAIClient())
         assert backend.list_models() == ["a-7b", "b-13b"]
 
     @pytest.mark.parametrize(
@@ -352,7 +230,7 @@ class TestOpenAIBackend:
     )
     def test_complete(self, kwargs, expected_messages, expect_max_tokens) -> None:
         client = FakeOpenAIClient()
-        backend = llm.OpenAIBackend(EndpointConfig(model="qwen"), client=client)
+        backend = llm.Backend(EndpointConfig(model="qwen"), client=client)
         # No schema appended, no JSON repair: raw text returned as-is.
         result = backend.complete("p", **kwargs)
         assert result == '{"value": "ok"}'
@@ -368,7 +246,7 @@ class TestOpenAIBackend:
     @pytest.mark.parametrize("thinking", [True, False])
     def test_thinking(self, thinking: bool) -> None:
         client = FakeOpenAIClient()
-        backend = llm.OpenAIBackend(EndpointConfig(model="qwen"), client=client)
+        backend = llm.Backend(EndpointConfig(model="qwen"), client=client)
         for call in (
             lambda: backend.query("p", OutModel, thinking=thinking),
             lambda: backend.complete("p", thinking=thinking),
@@ -400,12 +278,7 @@ class TestChatTimeout:
 
 
 class TestBuildBackend:
-    def test_dispatch(self) -> None:
+    def test_build(self) -> None:
         assert isinstance(
-            llm.build_backend(EndpointConfig(backend="openai", host="http://x")),
-            llm.OpenAIBackend,
-        )
-        assert isinstance(
-            llm.build_backend(EndpointConfig(backend="ollama")),
-            llm.OllamaBackend,
+            llm.build_backend(EndpointConfig(host="http://x/v1")), llm.Backend
         )

@@ -14,6 +14,7 @@ import {
 import { api, type CompanyDetail, type CompanySummary } from "@/lib/api"
 import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
+import { useScreenContext } from "@/lib/screen-context"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -193,6 +194,31 @@ export function CompaniesPanel({
         }) * factor
     })
   }, [filtered, sortKey, sortDir])
+
+  const { report } = useScreenContext()
+
+  // Report what is on screen (the rendered table rows + the selection)
+  // so the assistant can resolve "this company" / "these companies" to
+  // concrete ids. The selection is looked up in the full cache so it
+  // survives industry/search filters hiding its row.
+  useEffect(() => {
+    const selected =
+      companies.find((c) => c.id === selectedCompanyId) ?? null
+    report({
+      visibleCompanies: sorted.map((c) => ({
+        id: c.id,
+        name: c.name,
+        industry: c.industry,
+      })),
+      selectedCompany: selected
+        ? {
+            id: selected.id,
+            name: selected.name,
+            industry: selected.industry,
+          }
+        : null,
+    })
+  }, [report, companies, sorted, selectedCompanyId])
 
   const openDetail = useCallback(
     async (id: number) => {
