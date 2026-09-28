@@ -283,7 +283,7 @@ export function AssistantPanel({
                   m.role === "user" ? (
                     <div
                       key={i}
-                      className="ml-auto max-w-[85%] whitespace-pre-wrap rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
+                      className="ml-auto max-w-[85%] w-fit whitespace-pre-wrap rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
                     >
                       {m.text}
                     </div>
