@@ -762,6 +762,7 @@ def generate_document_pdf(
     user_input: str | None = None,
     model_name: str | None = None,
     output_dir: Path | None = None,
+    record: bool = True,
     figure_kinds: list[str] | None = None,
     quick_doc: bool = False,
     cover_page: bool = True,
@@ -787,6 +788,8 @@ def generate_document_pdf(
         model_name: Optional model ID override for the LLM queries.
         output_dir: Output directory override. When ``None``,
             :func:`resolve_output_dir` is used.
+        record: When ``False``, do not create a document record in the
+            store (the file is still written).
         figure_kinds: The allowed matplotlib figure kinds (e.g.
             ``["bar", "line"]``). When ``None`` or empty, no figures
             are included.
@@ -817,10 +820,9 @@ def generate_document_pdf(
             standalone document).
         reference_markdown: Markdown of the previous (reference) document,
             injected into the content prompt when *variation_index* > 1.
-        reuse_plan: The reference document's plan. When *variation_index*
-            > 1 the plan LLM call is skipped and this plan is reused so
-            the series keeps one design (TOC decision, palette,
-            typography); when ``None`` the default fallback plan is used.
+        reuse_plan: When provided, the plan LLM call is skipped and this
+            plan is used (series variations and agent alterations); when
+            ``None`` the default fallback plan is used for variations.
 
     Returns:
         The generated :class:`DocumentArtifact` (markdown, HTML, PDF path,
@@ -889,22 +891,25 @@ def generate_document_pdf(
     # documents skip the call and reuse the reference document's plan so
     # the whole series shares one design.
     is_variation = variation_index > 1
-    if is_variation:
+    if reuse_plan is not None:
         plan = reuse_plan
-        if plan is None:
-            logger.warning(
-                "PDF document: variation %d/%d has no reusable plan; "
-                "falling back to the default plan",
-                variation_index,
-                variation_total,
-            )
-            plan = _DEFAULT_DOCUMENT_PLAN
+        plan_prompt = "(skipped: reusing the provided plan)"
+        plan_elapsed = 0.0
+        plan_used_default = plan is _DEFAULT_DOCUMENT_PLAN
+    elif is_variation:
+        logger.warning(
+            "PDF document: variation %d/%d has no reusable plan; "
+            "falling back to the default plan",
+            variation_index,
+            variation_total,
+        )
+        plan = _DEFAULT_DOCUMENT_PLAN
         plan_prompt = (
-            "(skipped: reusing the reference document's plan for "
+            "(skipped: falling back to the default plan for "
             f"variation {variation_index} of {variation_total})"
         )
         plan_elapsed = 0.0
-        plan_used_default = plan is _DEFAULT_DOCUMENT_PLAN
+        plan_used_default = True
     else:
         plan, plan_prompt, plan_elapsed, plan_used_default = _plan_document(
             backend,
@@ -924,7 +929,7 @@ def generate_document_pdf(
         "output": plan.model_dump(mode="json"),
         "elapsed_s": round(plan_elapsed, 3),
         "used_default_fallback": plan_used_default,
-        "reused": is_variation,
+        "reused": reuse_plan is not None,
     }
 
     report_type_text = (
@@ -1132,9 +1137,13 @@ def generate_document_pdf(
     }
     trace["finished_at"] = datetime.now(UTC).isoformat()
     trace["total_elapsed_s"] = round(time.perf_counter() - t_total, 3)
-    _record_document(
-        company_id, report_type.name, path, gen_tracing=trace if gen_tracing else None
-    )
+    if record:
+        _record_document(
+            company_id,
+            report_type.name,
+            path,
+            gen_tracing=trace if gen_tracing else None,
+        )
     logger.info(
         "PDF document: finished for company %s in %.3fs total -> %s",
         company_id,

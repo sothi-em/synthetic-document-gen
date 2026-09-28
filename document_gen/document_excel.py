@@ -465,6 +465,7 @@ def generate_document_excel(
     user_input: str | None = None,
     model_name: str | None = None,
     output_dir: Path | None = None,
+    record: bool = True,
     figure_kinds: list[str] | None = None,
     quick_doc: bool = False,
     simple_sheets: bool = False,
@@ -494,6 +495,8 @@ def generate_document_excel(
         model_name: Optional model ID override for the LLM queries.
         output_dir: Output directory override. When ``None``,
             :func:`document_pdf.resolve_output_dir` is used.
+        record: When ``False``, do not create a document record in the
+            store (the file is still written).
         figure_kinds: The allowed matplotlib figure kinds (e.g.
             ``["bar", "line"]``). When ``None`` or empty, no figures
             are included. Forced to empty when *simple_sheets* is on.
@@ -525,10 +528,9 @@ def generate_document_excel(
             standalone workbook).
         reference_markdown: Markdown of the reference (previous) workbook,
             injected into the content prompt when *variation_index* > 1.
-        reuse_plan: The reference workbook's plan. When *variation_index*
-            > 1 the plan LLM call is skipped and this plan is reused so
-            the series keeps the same sheet names and design; when
-            ``None`` the default fallback plan is used.
+        reuse_plan: When provided, the plan LLM call is skipped and this
+            plan is used (series variations and agent alterations); when
+            ``None`` the default fallback plan is used for variations.
 
     Returns:
         The generated :class:`ExcelArtifact` (markdown, value-filled
@@ -607,25 +609,28 @@ def generate_document_excel(
     # workbooks skip the call and reuse the reference workbook's plan so
     # the whole series shares one design and sheet layout.
     is_variation = variation_index > 1
-    if is_variation:
+    if reuse_plan is not None:
         plan = reuse_plan
-        if plan is None:
-            logger.warning(
-                "Excel document: variation %d/%d has no reusable plan; "
-                "falling back to the default plan",
-                variation_index,
-                variation_total,
-            )
-            plan = _default_excel_plan(effective_cover)
-        plan_prompt = (
-            "(skipped: reusing the reference workbook's plan for "
-            f"variation {variation_index} of {variation_total})"
-        )
+        plan_prompt = "(skipped: reusing the provided plan)"
         plan_elapsed = 0.0
         plan_used_default = plan in (
             _DEFAULT_EXCEL_PLAN,
             _DEFAULT_EXCEL_PLAN_NO_COVER,
         )
+    elif is_variation:
+        logger.warning(
+            "Excel document: variation %d/%d has no reusable plan; "
+            "falling back to the default plan",
+            variation_index,
+            variation_total,
+        )
+        plan = _default_excel_plan(effective_cover)
+        plan_prompt = (
+            "(skipped: falling back to the default plan for "
+            f"variation {variation_index} of {variation_total})"
+        )
+        plan_elapsed = 0.0
+        plan_used_default = True
     else:
         plan, plan_prompt, plan_elapsed, plan_used_default = _plan_workbook(
             backend,
@@ -647,7 +652,7 @@ def generate_document_excel(
         "output": plan.model_dump(mode="json"),
         "elapsed_s": round(plan_elapsed, 3),
         "used_default_fallback": plan_used_default,
-        "reused": is_variation,
+        "reused": reuse_plan is not None,
     }
 
     # Stage 1: markdown draft focused on data tables.
@@ -812,9 +817,13 @@ def generate_document_excel(
     }
     trace["finished_at"] = datetime.now(UTC).isoformat()
     trace["total_elapsed_s"] = round(time.perf_counter() - t_total, 3)
-    document_pdf._record_document(
-        company_id, report_type.name, path, gen_tracing=trace if gen_tracing else None
-    )
+    if record:
+        document_pdf._record_document(
+            company_id,
+            report_type.name,
+            path,
+            gen_tracing=trace if gen_tracing else None,
+        )
     logger.info(
         "Excel document: finished for company %s in %.3fs total -> %s",
         company_id,

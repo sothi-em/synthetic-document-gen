@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
 
-from document_gen import agent, llm, server
+from document_gen import agent, document_pdf, document_query, llm, server
 from document_gen.models import EndpointConfig, LLMSettings
 
 pytest.importorskip("fastapi")
@@ -395,32 +396,50 @@ class TestProposeConfirm:
 
 
 class TestToolHandlers:
-    def test_generate_pdf_builds_download_urls(self, monkeypatch) -> None:
+    def test_generate_document_registers_ephemeral(
+        self, monkeypatch, clean_settings
+    ) -> None:
+        file = clean_settings / "a.pdf"
+        file.write_bytes(b"%PDF-1.4")
+        captured: list = []
         monkeypatch.setattr(
             server,
-            "generate_company_pdf",
-            lambda company_id, request: {
-                "id": "j1",
-                "status": "running",
-                "total": 1,
-            },
+            "start_transient_document",
+            lambda request: captured.append(request)
+            or {"id": "j1", "status": "running", "total": 1},
         )
         monkeypatch.setattr(
             server,
             "job_status",
             lambda job_id: SimpleNamespace(
                 status="done",
-                result={"documents": [{"pdf": "a.pdf", "report": "Annual Report"}]},
+                result={
+                    "documents": [
+                        {
+                            "filetype": "pdf",
+                            "filename": "a.pdf",
+                            "path": str(file),
+                            "report": "Annual Report",
+                            "markdown": "# T",
+                            "plan": None,
+                        }
+                    ]
+                },
             ),
         )
-        result = agent._tool_generate_pdf({"company_id": 7, "report": "Annual Report"})
-        assert result == [
-            {
-                "pdf": "a.pdf",
-                "report": "Annual Report",
-                "url": "/api/companies/7/pdf/a.pdf",
-            },
-        ]
+        result = agent._tool_generate_document(
+            {"filetype": "pdf", "company_id": 7, "report": "Annual Report"}
+        )
+        request = captured[0]
+        assert request.filetype == "pdf"
+        assert request.company_id == 7
+        assert request.report == "Annual Report"
+        doc = result["documents"][0]
+        assert doc["download_url"] == f"/api/agent/documents/{doc['token']}"
+        entry = agent.get_transient_document(doc["token"])
+        assert entry is not None
+        assert entry["markdown"] == "# T"
+        assert document_query.list_documents() == []
 
     def test_ui_tool_rejects_unknown_tab(self) -> None:
         with pytest.raises(agent.ToolError, match="unknown tab"):
@@ -432,11 +451,149 @@ class TestToolHandlers:
 
     def test_tool_schemas_are_openai_shaped(self) -> None:
         assert len(agent.TOOLS) == 32
+        assert {
+            "generate_document",
+            "alter_document",
+            "persist_document",
+        } <= set(agent.TOOLS)
+        assert {
+            "generate_pdf",
+            "generate_excel",
+            "generate_image",
+        }.isdisjoint(agent.TOOLS)
         for name, tool in agent.TOOLS.items():
             entry = tool.to_openai()
             assert entry["type"] == "function"
             assert entry["function"]["name"] == name
             assert entry["function"]["parameters"]["type"] == "object"
+
+
+class TestTransientDocuments:
+    @pytest.fixture(autouse=True)
+    def clear_ephemeral(self) -> None:
+        """The transient store is process-global; clear it after each test."""
+        yield
+        agent._EPHEMERAL_DOCS.clear()
+
+    @staticmethod
+    def _entry(tmp_path, name, markdown="# T", plan=None, **overrides):
+        file = tmp_path / name
+        file.write_bytes(b"%PDF-1.4")
+        record = {
+            "filetype": "pdf",
+            "company_id": 7,
+            "report": "Annual Report",
+            "filename": name,
+            "path": str(file),
+            "markdown": markdown,
+            "plan": plan,
+            "options": {
+                "figure_kinds": [],
+                "quick_doc": False,
+                "cover_page": True,
+                "simple_sheets": False,
+                "cover_sheet": True,
+                "glossary": False,
+                "a4_aspect": True,
+            },
+            "expires": time.monotonic() + agent.TRANSIENT_TTL,
+        }
+        record.update(overrides)
+        return agent._register_ephemeral(record), file
+
+    def test_alter_document_composes_and_replaces(self, monkeypatch, tmp_path) -> None:
+        plan = {
+            "include_toc": False,
+            "toc_reason": "r",
+            "design_direction": "d",
+            "palette": ["#000000"],
+            "typography": "t",
+            "layout_style": "corporate",
+        }
+        token, old_file = self._entry(tmp_path, "old.pdf", markdown="# Old", plan=plan)
+        new_file = tmp_path / "new.pdf"
+        new_file.write_bytes(b"new")
+        captured: list = []
+        monkeypatch.setattr(
+            server,
+            "start_transient_document",
+            lambda request: captured.append(request)
+            or {"id": "j2", "status": "running", "total": 1},
+        )
+        monkeypatch.setattr(
+            server,
+            "job_status",
+            lambda job_id: SimpleNamespace(
+                status="done",
+                result={
+                    "documents": [
+                        {
+                            "filetype": "pdf",
+                            "filename": "new.pdf",
+                            "path": str(new_file),
+                            "report": "Annual Report",
+                            "markdown": "# New",
+                            "plan": plan,
+                        }
+                    ]
+                },
+            ),
+        )
+        result = agent._tool_alter_document(
+            {"token": token, "instruction": "make it blue"}
+        )
+        request = captured[0]
+        assert "make it blue" in request.user_input
+        assert "# Old" in request.user_input
+        assert request.reuse_plan == plan
+        assert request.count == 1
+        assert request.filetype == "pdf"
+        assert result["token"] == token
+        assert agent.get_transient_document(token)["path"] == str(new_file)
+        assert not old_file.exists()
+
+    def test_persist_document_moves_and_records(
+        self, monkeypatch, clean_settings
+    ) -> None:
+        token, file = self._entry(clean_settings, "doc.pdf")
+        out_dir = clean_settings / "out"
+        monkeypatch.setattr(document_pdf, "resolve_output_dir", lambda: out_dir)
+        monkeypatch.setattr(
+            document_query, "get_document_type_id", lambda company_id, report: 5
+        )
+        monkeypatch.setattr(
+            document_query, "save_document", lambda company_id, type_id, path: 99
+        )
+        result = agent._tool_persist_document({"token": token})
+        assert result["doc_id"] == 99
+        assert result["download_url"] == "/api/documents/99/download"
+        assert (out_dir / "doc.pdf").is_file()
+        assert not file.exists()
+        assert agent.get_transient_document(token) is None
+
+    def test_transient_token_unknown_or_expired(self, monkeypatch, tmp_path) -> None:
+        with pytest.raises(agent.ToolError, match="expired or unknown"):
+            agent._tool_alter_document({"token": "nope", "instruction": "x"})
+        with pytest.raises(agent.ToolError, match="expired or unknown"):
+            agent._tool_persist_document({"token": "nope"})
+        file = tmp_path / "gone.pdf"
+        file.write_bytes(b"x")
+        monkeypatch.setattr(agent, "TRANSIENT_TTL", -1)
+        token = agent._register_ephemeral(
+            {
+                "filetype": "pdf",
+                "company_id": 7,
+                "report": "Annual Report",
+                "filename": "gone.pdf",
+                "path": str(file),
+                "markdown": "# T",
+                "plan": None,
+                "options": {},
+                "expires": time.monotonic() - 10,
+            }
+        )
+        assert agent.get_transient_document(token) is None
+        assert not file.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -486,3 +643,35 @@ class TestAgentRoutes:
 
         response = TestClient(server.app).get("/api/agent-config")
         assert response.status_code == 404
+
+    def test_download_transient_route(self, clean_settings) -> None:
+        from fastapi.testclient import TestClient
+
+        file = clean_settings / "dl.pdf"
+        file.write_bytes(b"%PDF-1.4 transient")
+        token = agent._register_ephemeral(
+            {
+                "filetype": "pdf",
+                "company_id": 1,
+                "report": "Annual Report",
+                "filename": "dl.pdf",
+                "path": str(file),
+                "markdown": "# T",
+                "plan": None,
+                "options": {},
+                "expires": time.monotonic() + agent.TRANSIENT_TTL,
+            }
+        )
+        try:
+            response = TestClient(server.app).get(f"/api/agent/documents/{token}")
+            assert response.status_code == 200
+            disposition = response.headers["content-disposition"]
+            assert "attachment" in disposition
+            assert "dl.pdf" in disposition
+            assert response.content == b"%PDF-1.4 transient"
+            assert (
+                TestClient(server.app).get("/api/agent/documents/nope").status_code
+                == 404
+            )
+        finally:
+            agent._EPHEMERAL_DOCS.clear()
