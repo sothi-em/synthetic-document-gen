@@ -327,8 +327,8 @@ export function AssistantPanel({
                       : "Ask about your companies or documents…"
                   }
                   disabled={available === false}
-                  rows={5}
-                  className="min-h-[114px] flex-1 resize-none"
+                  rows={3}
+                  className="min-h-[74px] flex-1 resize-none"
                 />
                 <Button
                   onClick={send}
